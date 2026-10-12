@@ -1459,6 +1459,7 @@ fieldset {
 
 .signin-card {
     width: min(34rem, 100%);
+    margin-inline: auto;
     background: var(--app-surface);
     border: 1px solid var(--app-border);
     border-radius: 18px;
