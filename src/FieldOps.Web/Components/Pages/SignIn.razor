@@ -1,0 +1,65 @@
+@page "/signin"
+@attribute [AllowAnonymous]
+@attribute [ExcludeFromInteractiveRouting]
+@layout SignInLayout
+@using Microsoft.EntityFrameworkCore
+@inject IDbContextFactory<AppDbContext> DbFactory
+
+<PageTitle>Sign in · FieldOps</PageTitle>
+
+<div class="signin-card">
+    <div class="signin-brand">
+        <span class="brand-mark"><i class="bi bi-geo-alt-fill" aria-hidden="true"></i></span>
+        <span>FieldOps</span>
+    </div>
+
+    <h1 class="h4 mb-1">Choose a sample user</h1>
+    <p class="text-body-secondary">
+        This demo runs on generated data, so there are no passwords. Office staff manage every job;
+        field technicians see their own work and their route for the day.
+    </p>
+
+    <form method="post" action="account/signin">
+        <AntiforgeryToken />
+        <input type="hidden" name="returnUrl" value="@ReturnUrl" />
+
+        @foreach (var group in users.GroupBy(u => u.Role))
+        {
+            <h2 class="signin-group">@(group.Key == UserRole.Office ? "Office" : "Field")</h2>
+            <div class="signin-users">
+                @foreach (var user in group)
+                {
+                    <button type="submit" name="userId" value="@user.Id" class="signin-user">
+                        <span class="avatar avatar-lg">@user.Initials</span>
+                        <span>
+                            <span class="signin-user-name">@user.Name</span>
+                            <span class="signin-user-title">@user.Title</span>
+                        </span>
+                        <i class="bi bi-arrow-right-short ms-auto" aria-hidden="true"></i>
+                    </button>
+                }
+            </div>
+        }
+    </form>
+
+    <p class="signin-tip">
+        <i class="bi bi-lightbulb" aria-hidden="true"></i>
+        Sign in as two different people in two browsers (or a private window) to watch team chat update live.
+    </p>
+</div>
+
+@code {
+    private List<AppUser> users = [];
+
+    [SupplyParameterFromQuery]
+    public string? ReturnUrl { get; set; }
+
+    protected override async Task OnInitializedAsync()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        users = (await db.Users.AsNoTracking().ToListAsync())
+            .OrderBy(u => u.Role)
+            .ThenBy(u => u.Name)
+            .ToList();
+    }
+}

@@ -1,0 +1,196 @@
+@page "/board"
+@inject JobService Jobs
+@inject CurrentUser Me
+@inject IJSRuntime JS
+
+<PageTitle>Board · FieldOps</PageTitle>
+
+<div class="page-header">
+    <div>
+        <h1>Board</h1>
+        <p class="page-subtitle">
+            Drag a card to move a job; columns light up when the move is allowed. Cards you can move also have a
+            Move menu for keyboard users.
+        </p>
+    </div>
+</div>
+
+@if (toast is not null)
+{
+    <div class="alert @(toastIsError ? "alert-danger" : "alert-success") alert-dismissible py-2" role="status">
+        @toast
+        <button type="button" class="btn-close" aria-label="Dismiss" @onclick="() => toast = null"></button>
+    </div>
+}
+
+@if (cards is null || user is null)
+{
+    <div class="loading"><span class="spinner-border spinner-border-sm" aria-hidden="true"></span> Loading…</div>
+}
+else
+{
+    <div class="board" role="list">
+        @foreach (var status in Columns)
+        {
+            var column = cards.Where(c => c.Status == status).ToList();
+            <section role="listitem" aria-label="@($"{status.Label()}, {column.Count} jobs")"
+                     class="board-column @DropClass(status)"
+                     @ondragover:preventDefault="true"
+                     @ondragenter="() => hovered = status"
+                     @ondrop="() => DropAsync(status)">
+                <header class="board-column-header">
+                    <span class="status-dot status-@status.CssKey()" aria-hidden="true"></span>
+                    <h2>@status.Label()</h2>
+                    <span class="board-count">@column.Count</span>
+                </header>
+
+                <div class="board-cards">
+                    @foreach (var card in column.Take(CardsPerColumn))
+                    {
+                        var movable = CanMove(card);
+                        var steps = StatusWorkflow.NextSteps(card.Status, user.IsOffice);
+                        <article @key="card.Id" id="@($"card-{card.Id}")" tabindex="-1"
+                                 class="board-card @(dragging?.Id == card.Id ? "dragging" : "") @(movable ? "" : "locked")"
+                                 draggable="@(movable ? "true" : "false")"
+                                 data-id="@card.Id"
+                                 @ondragstart="() => { if (movable) dragging = card; }"
+                                 @ondragend="() => { dragging = null; hovered = null; }">
+                            <div class="board-card-top">
+                                <a class="job-ref" href="@($"jobs/{card.Id}")">@card.Reference</a>
+                                @if (card.IsOverdue)
+                                {
+                                    <span class="badge text-bg-danger">Overdue</span>
+                                }
+                                @if (!movable)
+                                {
+                                    <i class="bi bi-lock ms-auto text-body-secondary" title="Assigned to someone else" aria-hidden="true"></i>
+                                }
+                            </div>
+                            <div class="board-card-title">@card.Title</div>
+                            <div class="board-card-client">@card.Client</div>
+                            <div class="board-card-footer">
+                                @if (card.AssigneeInitials is not null)
+                                {
+                                    <span class="avatar avatar-sm" title="Assigned technician">@card.AssigneeInitials</span>
+                                }
+                                @if (card.NextVisit is { } next)
+                                {
+                                    <span class="small @(card.IsOverdue ? "text-danger" : "text-body-secondary")">
+                                        <i class="bi bi-calendar-event me-1" aria-hidden="true"></i>@next.ToString("MMM d", CultureInfo.CurrentCulture)
+                                    </span>
+                                }
+                                @if (movable && steps.Count > 0)
+                                {
+                                    @* Choosing a status only selects it; the button makes the move. Arrow keys on a
+                                       closed select fire "change", so moving on change would act on the first keypress. *@
+                                    <div class="board-move">
+                                        <select class="form-select form-select-sm" aria-label="@($"Move {card.Reference} to")"
+                                                value="@(chosen.TryGetValue(card.Id, out var pick) ? pick.ToString() : "")"
+                                                @onchange="e => Choose(card, e.Value as string)">
+                                            <option value="">Move to…</option>
+                                            @foreach (var step in steps)
+                                            {
+                                                <option value="@step">@step.Label()</option>
+                                            }
+                                        </select>
+                                        <button type="button" class="btn btn-sm btn-outline-primary"
+                                                disabled="@(!chosen.ContainsKey(card.Id))"
+                                                @onclick="() => MoveFromMenuAsync(card)">Move</button>
+                                    </div>
+                                }
+                            </div>
+                        </article>
+                    }
+
+                    @if (column.Count > CardsPerColumn)
+                    {
+                        <a class="board-more" href="@($"jobs?status={status}")">+ @(column.Count - CardsPerColumn) more in the list</a>
+                    }
+                    @if (column.Count == 0)
+                    {
+                        <p class="board-empty">Nothing here</p>
+                    }
+                </div>
+            </section>
+        }
+    </div>
+}
+
+@code {
+    private const int CardsPerColumn = 12;
+
+    // Cancelled jobs are closed and stay off the board; they are still searchable in the list.
+    private static readonly JobStatus[] Columns =
+    [
+        JobStatus.Quote, JobStatus.Scheduled, JobStatus.FieldWork, JobStatus.Office,
+        JobStatus.Delivered, JobStatus.Invoiced, JobStatus.OnHold,
+    ];
+
+    private IReadOnlyList<BoardCard>? cards;
+    private UserContext? user;
+    private BoardCard? dragging;
+    private JobStatus? hovered;
+    private string? toast;
+    private bool toastIsError;
+    private readonly Dictionary<int, JobStatus> chosen = [];
+    private int? focusCardId;
+
+    protected override async Task OnInitializedAsync()
+    {
+        user = await Me.GetAsync();
+        cards = await Jobs.BoardAsync();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        // After a move from the menu, keyboard focus follows the card to its new column.
+        if (focusCardId is { } id)
+        {
+            focusCardId = null;
+            // The browser may already have gone; there is nothing left to focus.
+            try { await JS.InvokeVoidAsync("fieldops.focusById", $"card-{id}"); }
+            catch (JSDisconnectedException) { }
+        }
+    }
+
+    private bool CanMove(BoardCard card) => user is not null && (user.IsOffice || card.AssigneeId == user.Id);
+
+    private string DropClass(JobStatus status)
+    {
+        if (dragging is null || dragging.Status == status) return string.Empty;
+        var allowed = StatusWorkflow.NextSteps(dragging.Status, user?.IsOffice == true).Contains(status);
+        return (allowed ? "drop-allowed" : "drop-blocked") + (hovered == status ? " drop-hover" : string.Empty);
+    }
+
+    private async Task DropAsync(JobStatus target)
+    {
+        var card = dragging;
+        dragging = null;
+        hovered = null;
+        if (card is not null && card.Status != target) await MoveAsync(card, target);
+    }
+
+    private void Choose(BoardCard card, string? value)
+    {
+        if (Enum.TryParse<JobStatus>(value, out var target)) chosen[card.Id] = target;
+        else chosen.Remove(card.Id);
+    }
+
+    private async Task MoveFromMenuAsync(BoardCard card)
+    {
+        if (!chosen.Remove(card.Id, out var target)) return;
+        await MoveAsync(card, target);
+        focusCardId = card.Id;
+    }
+
+    private async Task MoveAsync(BoardCard card, JobStatus target)
+    {
+        if (user is null) return;
+        // A pending menu choice belongs to the card's old column; drop it whichever way the card moved.
+        chosen.Remove(card.Id);
+        var result = await Jobs.MoveAsync(card.Id, target, user);
+        toastIsError = !result.IsOk;
+        toast = result.IsOk ? $"{card.Reference} moved to {target.Label()}." : result.Message;
+        cards = await Jobs.BoardAsync();
+    }
+}

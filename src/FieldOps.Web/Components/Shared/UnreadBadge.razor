@@ -1,0 +1,35 @@
+@implements IDisposable
+@inject ChatService Chat
+@inject ChatNotifier Notifier
+@inject CurrentUser Me
+
+@if (count > 0)
+{
+    <span class="nav-badge">@(count > 99 ? "99+" : count) <span class="visually-hidden">unread</span></span>
+}
+
+@code {
+    private int count;
+    private int? me;
+
+    protected override async Task OnInitializedAsync()
+    {
+        // Subscribe before the first await so Dispose always has something to undo.
+        Notifier.UnreadChanged += OnUnreadChanged;
+        me = (await Me.GetAsync()).Id;
+        count = await Chat.UnreadCountAsync(me.Value);
+    }
+
+    // Only unread changes reach this badge. A message being marked done never touches it.
+    private void OnUnreadChanged(int userId)
+    {
+        if (userId != me) return;
+        _ = InvokeAsync(async () =>
+        {
+            count = await Chat.UnreadCountAsync(userId);
+            StateHasChanged();
+        });
+    }
+
+    public void Dispose() => Notifier.UnreadChanged -= OnUnreadChanged;
+}

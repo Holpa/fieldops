@@ -1,0 +1,37 @@
+# Build output
+bin/
+obj/
+publish/
+[Dd]ebug/
+[Rr]elease/
+
+# IDE and editor files
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+*.swp
+
+# Test results
+TestResults/
+*.trx
+coverage/
+
+# Local SQLite database - created and seeded on first run
+*.db
+*.db-shm
+*.db-wal
+*.db-journal
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Secrets and local keys - never commit
+.env
+.env.*
+*.pfx
+*.pem
+*.key
+secrets.json

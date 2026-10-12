@@ -1,0 +1,77 @@
+@* Draws a route without any map service: latitude/longitude are projected onto the SVG with an
+   equirectangular projection (longitude scaled by cos(latitude)), which is accurate at city scale. *@
+
+<figure class="route-map">
+    <svg viewBox="0 0 @Width @Height" role="img" aria-label="@($"Route map with {Stops.Count} stops")" preserveAspectRatio="xMidYMid meet">
+        <defs>
+            <pattern id="route-grid" width="40" height="40" patternUnits="userSpaceOnUse">
+                <path d="M 40 0 L 0 0 0 40" class="route-grid-line" />
+            </pattern>
+        </defs>
+        <rect width="@Width" height="@Height" fill="url(#route-grid)" class="route-bg" />
+
+        @if (Stops.Count > 0)
+        {
+            <polyline class="route-path" points="@PathPoints()" />
+        }
+
+        @for (int i = 0; i < Stops.Count; i++)
+        {
+            var stop = Stops[i];
+            var (x, y) = Project(stop.Location);
+            <g class="route-stop @(stop.IsDone ? "done" : "")">
+                <title>@($"{i + 1}. {stop.Reference} - {stop.Title}")</title>
+                <circle cx="@F(x)" cy="@F(y)" r="13" />
+                <text x="@F(x)" y="@F(y + 4)" text-anchor="middle">@(i + 1)</text>
+            </g>
+        }
+
+        @{
+            var (dx, dy) = Project(Depot);
+        }
+        <g class="route-depot">
+            <title>Depot - every route starts here</title>
+            <rect x="@F(dx - 13)" y="@F(dy - 13)" width="26" height="26" rx="5" />
+            <text x="@F(dx)" y="@F(dy + 4)" text-anchor="middle">HQ</text>
+        </g>
+    </svg>
+</figure>
+
+@code {
+    private const double Width = 640, Height = 420, Padding = 36;
+
+    private double minX, minY, scale, offsetX, offsetY, cosLat;
+
+    [Parameter, EditorRequired] public GeoPoint Depot { get; set; }
+    [Parameter, EditorRequired] public IReadOnlyList<RouteStop> Stops { get; set; } = [];
+
+    protected override void OnParametersSet()
+    {
+        var points = Stops.Select(s => s.Location).Append(Depot).ToList();
+        cosLat = Math.Cos(points.Average(p => p.Lat) * Math.PI / 180);
+
+        var xs = points.Select(p => p.Lng * cosLat).ToList();
+        var ys = points.Select(p => -p.Lat).ToList();
+        minX = xs.Min();
+        minY = ys.Min();
+        double spanX = Math.Max(xs.Max() - minX, 1e-6);
+        double spanY = Math.Max(ys.Max() - minY, 1e-6);
+
+        // One scale for both axes keeps distances true; the drawing is centred in the spare space.
+        scale = Math.Min((Width - 2 * Padding) / spanX, (Height - 2 * Padding) / spanY);
+        offsetX = (Width - spanX * scale) / 2;
+        offsetY = (Height - spanY * scale) / 2;
+    }
+
+    private (double X, double Y) Project(GeoPoint p) =>
+        (offsetX + (p.Lng * cosLat - minX) * scale, offsetY + (-p.Lat - minY) * scale);
+
+    private string PathPoints() =>
+        string.Join(' ', Stops.Select(s => s.Location).Prepend(Depot).Select(p =>
+        {
+            var (x, y) = Project(p);
+            return $"{F(x)},{F(y)}";
+        }));
+
+    private static string F(double value) => value.ToString("0.#", CultureInfo.InvariantCulture);
+}

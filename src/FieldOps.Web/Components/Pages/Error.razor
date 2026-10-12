@@ -1,0 +1,23 @@
+@page "/error"
+@attribute [AllowAnonymous]
+@attribute [ExcludeFromInteractiveRouting]
+@using System.Diagnostics
+
+<PageTitle>Error · FieldOps</PageTitle>
+
+<div class="empty-state">
+    <i class="bi bi-exclamation-octagon text-danger" aria-hidden="true"></i>
+    <h1 class="h4">Something went wrong</h1>
+    <p>The request couldn't be completed. Please try again.</p>
+    @if (RequestId is not null)
+    {
+        <p class="small text-body-secondary">Request ID: <code>@RequestId</code></p>
+    }
+</div>
+
+@code {
+    [CascadingParameter]
+    private HttpContext? HttpContext { get; set; }
+
+    private string? RequestId => Activity.Current?.Id ?? HttpContext?.TraceIdentifier;
+}

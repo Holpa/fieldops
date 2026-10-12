@@ -1,0 +1,11 @@
+@inherits LayoutComponentBase
+
+<div class="signin-shell">
+    <button type="button" class="btn btn-icon signin-theme" data-action="toggle-theme" aria-label="Switch light or dark theme">
+        <i class="bi bi-moon-stars theme-icon-light" aria-hidden="true"></i>
+        <i class="bi bi-sun theme-icon-dark" aria-hidden="true"></i>
+    </button>
+    <main id="main">
+        @Body
+    </main>
+</div>

@@ -1,0 +1,73 @@
+@inherits LayoutComponentBase
+
+<a class="skip-link" href="#main">Skip to content</a>
+
+<div class="app-shell">
+    <aside id="sidebar" class="sidebar" aria-label="Primary">
+        <a class="brand" href="">
+            <span class="brand-mark"><i class="bi bi-geo-alt-fill" aria-hidden="true"></i></span>
+            <span>FieldOps</span>
+        </a>
+        <NavMenu />
+    </aside>
+    <div class="sidebar-backdrop"></div>
+
+    <div class="main-column">
+        <header class="topbar">
+            <button type="button" class="btn btn-icon d-lg-none nav-toggle" data-action="toggle-nav" aria-label="Menu"
+                    aria-expanded="false" aria-controls="sidebar">
+                <i class="bi bi-list" aria-hidden="true"></i>
+            </button>
+
+            <div class="topbar-actions">
+                <button type="button" class="btn btn-icon" data-action="toggle-theme" title="Switch light / dark theme" aria-label="Switch light or dark theme">
+                    <i class="bi bi-moon-stars theme-icon-light" aria-hidden="true"></i>
+                    <i class="bi bi-sun theme-icon-dark" aria-hidden="true"></i>
+                </button>
+
+                <AuthorizeView>
+                    <div class="user-chip">
+                        <span class="avatar">@AppUser.InitialsOf(context.User.Identity?.Name)</span>
+                        <span class="d-none d-sm-block">
+                            <span class="user-chip-name">@context.User.Identity?.Name</span>
+                            <span class="user-chip-role">@(context.User.IsInRole(nameof(UserRole.Office)) ? "Office" : "Field technician")</span>
+                        </span>
+                    </div>
+                    <form method="post" action="account/signout" class="m-0">
+                        <AntiforgeryToken />
+                        <button type="submit" class="btn btn-sm btn-outline-secondary">
+                            <i class="bi bi-box-arrow-right" aria-hidden="true"></i><span class="d-none d-md-inline ms-1">Switch user</span>
+                        </button>
+                    </form>
+                </AuthorizeView>
+            </div>
+        </header>
+
+        <main id="main" class="content" tabindex="-1">
+            @* A fault in one page shows an alert here instead of ending the whole connection. *@
+            <ErrorBoundary @ref="boundary">
+                <ChildContent>@Body</ChildContent>
+                <ErrorContent>
+                    <div class="alert alert-danger" role="alert">
+                        This page hit an unexpected error.
+                        <button type="button" class="btn btn-sm btn-outline-danger ms-2" @onclick="() => boundary?.Recover()">Try again</button>
+                    </div>
+                </ErrorContent>
+            </ErrorBoundary>
+        </main>
+    </div>
+</div>
+
+<div id="blazor-error-ui" data-nosnippet>
+    An unexpected error occurred.
+    <a href="." class="reload">Reload</a>
+    <button type="button" class="dismiss" aria-label="Dismiss">×</button>
+</div>
+
+@code {
+    private ErrorBoundary? boundary;
+
+    // Moving to another page clears an error shown by the previous one.
+    protected override void OnParametersSet() => boundary?.Recover();
+}
+

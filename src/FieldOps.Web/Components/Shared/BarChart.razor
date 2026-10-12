@@ -1,0 +1,94 @@
+@* A dependency-free SVG bar chart. Every number written into the SVG goes through F(), which formats with the
+   invariant culture: in locales that use a decimal comma, "12,5" would silently break the coordinates. *@
+
+<figure class="chart">
+    <svg viewBox="0 0 @Width @Height" role="img" aria-labelledby="@titleId" preserveAspectRatio="xMidYMid meet">
+        <title id="@titleId">@Title</title>
+
+        @for (int i = 0; i <= gridLines; i++)
+        {
+            var value = tickStep * i;
+            var y = Y(value);
+            <g>
+                <line class="chart-grid" x1="@F(PadLeft)" x2="@F(Width - PadRight)" y1="@F(y)" y2="@F(y)" />
+                <text class="chart-axis" x="@F(PadLeft - 8)" y="@F(y + 4)" text-anchor="end">@F(value)</text>
+            </g>
+        }
+
+        @for (int i = 0; i < Bars.Count; i++)
+        {
+            var bar = Bars[i];
+            var x = PadLeft + slot * i + (slot - barWidth) / 2;
+            var y = Y(bar.Count);
+
+            @if (bar.IsCurrent && Projection is { } projected && projected > bar.Count)
+            {
+                var py = Y(projected);
+                <g>
+                    <rect class="chart-projection" x="@F(x)" y="@F(py)" width="@F(barWidth)" height="@F(BaseLine - py)" rx="3" />
+                    <text class="chart-value muted" x="@F(x + barWidth / 2)" y="@F(py - 6)" text-anchor="middle">~@F(Math.Round(projected))</text>
+                </g>
+            }
+
+            <g>
+                <rect class="chart-bar @(bar.IsCurrent ? "current" : "")" x="@F(x)" y="@F(y)" width="@F(barWidth)" height="@F(BaseLine - y)" rx="3">
+                    <title>@($"{bar.Label}: {bar.Count}{(bar.IsCurrent ? " so far" : "")}")</title>
+                </rect>
+                <text class="chart-value" x="@F(x + barWidth / 2)" y="@F(y - 6)" text-anchor="middle">@bar.Count</text>
+                <text class="chart-axis" x="@F(x + barWidth / 2)" y="@F(Height - 8)" text-anchor="middle">@bar.Label</text>
+            </g>
+        }
+    </svg>
+
+    @* The same data as a table, for screen readers. *@
+    <table class="visually-hidden">
+        <caption>@Title</caption>
+        <tr><th>Month</th><th>Jobs</th></tr>
+        @foreach (var bar in Bars)
+        {
+            <tr><td>@($"{bar.Label}{(bar.IsCurrent ? " (so far)" : "")}")</td><td>@bar.Count</td></tr>
+        }
+    </table>
+</figure>
+
+@code {
+    private const double Width = 680, Height = 240, PadLeft = 40, PadRight = 12, PadTop = 22, PadBottom = 30;
+    private const double BaseLine = Height - PadBottom;
+
+    private readonly string titleId = $"chart-{Guid.NewGuid():N}";
+    private double scaleMax = 1, tickStep = 1, slot, barWidth;
+    private int gridLines = 1;
+
+    [Parameter, EditorRequired] public IReadOnlyList<MonthBar> Bars { get; set; } = [];
+    [Parameter] public double? Projection { get; set; }
+    [Parameter] public string Title { get; set; } = "Chart";
+
+    protected override void OnParametersSet()
+    {
+        double max = Math.Max(1, Math.Max(Bars.Count == 0 ? 0 : Bars.Max(b => b.Count), Projection ?? 0));
+        tickStep = NiceStep(max / 4);
+        scaleMax = tickStep * Math.Ceiling(max / tickStep);
+        gridLines = (int)Math.Round(scaleMax / tickStep);
+        slot = Bars.Count == 0 ? 0 : (Width - PadLeft - PadRight) / Bars.Count;
+        barWidth = slot * 0.62;
+    }
+
+    private double Y(double value) => BaseLine - (BaseLine - PadTop) * value / scaleMax;
+
+    /// <summary>
+    /// Rounds a raw gridline interval up to 1, 2 or 5 times a power of ten, and never below 1: counts are whole
+    /// numbers, so the axis reads 0, 10, 20, 30 rather than 0, 12.5, 25, 37.5.
+    /// </summary>
+    private static double NiceStep(double raw)
+    {
+        if (raw <= 1) return 1;
+        double magnitude = Math.Pow(10, Math.Floor(Math.Log10(raw)));
+        foreach (var multiple in new[] { 1, 2, 5, 10 })
+        {
+            if (multiple * magnitude >= raw) return multiple * magnitude;
+        }
+        return 10 * magnitude;
+    }
+
+    private static string F(double value) => value.ToString("0.##", CultureInfo.InvariantCulture);
+}

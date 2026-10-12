@@ -1,0 +1,10 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/FieldOps.Core/FieldOps.Core.csproj" />
+    <Project Path="src/FieldOps.Web/FieldOps.Web.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/FieldOps.Core.Tests/FieldOps.Core.Tests.csproj" />
+    <Project Path="tests/FieldOps.Web.Tests/FieldOps.Web.Tests.csproj" />
+  </Folder>
+</Solution>

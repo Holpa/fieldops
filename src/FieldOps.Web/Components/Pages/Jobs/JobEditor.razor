@@ -1,0 +1,464 @@
+@page "/jobs/new"
+@page "/jobs/{Id:int}"
+@inject JobService Jobs
+@inject CurrentUser Me
+@inject NavigationManager Navigation
+@inject TimeProvider Clock
+
+<PageTitle>@TabTitle · FieldOps</PageTitle>
+
+<a class="back-link" href="@BackUrl"><i class="bi bi-arrow-left" aria-hidden="true"></i> Back to jobs</a>
+
+@if (notFound)
+{
+    <div class="empty-state">
+        <i class="bi bi-question-circle" aria-hidden="true"></i>
+        <p>This job doesn't exist or has been deleted.</p>
+    </div>
+}
+else if (model is null || user is null)
+{
+    <div class="loading"><span class="spinner-border spinner-border-sm" aria-hidden="true"></span> Loading…</div>
+}
+else if (IsNew && !CanEdit)
+{
+    <div class="empty-state">
+        <i class="bi bi-lock" aria-hidden="true"></i>
+        <p>Only office staff can create jobs.</p>
+    </div>
+}
+else
+{
+    <div class="page-header">
+        <div>
+            <h1>@Heading</h1>
+            @if (detail is not null)
+            {
+                <p class="page-subtitle d-flex flex-wrap align-items-center gap-2">
+                    <StatusBadge Status="detail.Input.Status" />
+                    <span>Created @detail.CreatedUtc.ToLocalTime().ToString("MMM d, yyyy", CultureInfo.CurrentCulture)</span>
+                    <span aria-hidden="true">·</span>
+                    <span>Updated @detail.UpdatedUtc.ToLocalTime().ToString("MMM d, HH:mm", CultureInfo.CurrentCulture)</span>
+                </p>
+            }
+        </div>
+    </div>
+
+    @if (message is not null)
+    {
+        <div class="alert @(messageIsError ? "alert-danger" : "alert-success") d-flex align-items-center gap-2" role="status">
+            <i class="bi @(messageIsError ? "bi-exclamation-triangle" : "bi-check-circle")" aria-hidden="true"></i>
+            <span>@message</span>
+            @if (conflict)
+            {
+                <button type="button" class="btn btn-sm btn-outline-danger ms-auto" @onclick="ReloadAsync">Load their version</button>
+            }
+        </div>
+    }
+
+    <div class="editor-grid">
+        <section class="panel">
+            <header class="panel-header">
+                <h2>Details</h2>
+                @if (!CanEdit)
+                {
+                    <span class="badge text-bg-secondary">Read only</span>
+                }
+            </header>
+
+            <EditForm Model="model" OnValidSubmit="SaveAsync">
+                <DataAnnotationsValidator />
+                <fieldset disabled="@(!CanEdit || busy)">
+                    <div class="form-grid">
+                        <div class="field span-2">
+                            <label for="title" class="form-label">Title</label>
+                            <InputText id="title" class="form-control" @bind-Value="model.Title" />
+                            <ValidationMessage For="() => model.Title" />
+                        </div>
+                        <div class="field">
+                            <label for="client" class="form-label">Client</label>
+                            <InputText id="client" class="form-control" @bind-Value="model.Client" />
+                            <ValidationMessage For="() => model.Client" />
+                        </div>
+                        <div class="field">
+                            <label for="status" class="form-label">Status</label>
+                            <InputSelect id="status" class="form-select" @bind-Value="model.Status">
+                                @foreach (var s in StatusOptions)
+                                {
+                                    <option value="@s">@s.Label()</option>
+                                }
+                            </InputSelect>
+                            <div class="form-text">Only moves the workflow allows are offered.</div>
+                        </div>
+                        <div class="field span-2">
+                            <label for="address" class="form-label">Address</label>
+                            <InputText id="address" class="form-control" @bind-Value="model.Address" />
+                            <ValidationMessage For="() => model.Address" />
+                        </div>
+                        <div class="field">
+                            <label for="city" class="form-label">City</label>
+                            <InputText id="city" class="form-control" @bind-Value="model.City" />
+                            <ValidationMessage For="() => model.City" />
+                        </div>
+                        <div class="field">
+                            <label for="assignee" class="form-label">Technician</label>
+                            <InputSelect id="assignee" class="form-select" @bind-Value="model.AssigneeId">
+                                <option value="">Unassigned</option>
+                                @foreach (var t in technicians)
+                                {
+                                    <option value="@t.Id">@t.Name</option>
+                                }
+                            </InputSelect>
+                        </div>
+                        <div class="field">
+                            <label for="lat" class="form-label">Latitude</label>
+                            <InputNumber id="lat" class="form-control" step="any" @bind-Value="model.Latitude" />
+                            <ValidationMessage For="() => model.Latitude" />
+                        </div>
+                        <div class="field">
+                            <label for="lng" class="form-label">Longitude</label>
+                            <InputNumber id="lng" class="form-control" step="any" @bind-Value="model.Longitude" />
+                            <ValidationMessage For="() => model.Longitude" />
+                        </div>
+                        <div class="field span-2">
+                            <label for="notes" class="form-label">Notes</label>
+                            <InputTextArea id="notes" class="form-control" rows="3" @bind-Value="model.Notes" />
+                            <ValidationMessage For="() => model.Notes" />
+                        </div>
+                    </div>
+                </fieldset>
+
+                @if (CanEdit)
+                {
+                    <div class="form-actions">
+                        <button type="submit" class="btn btn-primary" disabled="@busy">
+                            @if (busy)
+                            {
+                                <span class="spinner-border spinner-border-sm me-1" aria-hidden="true"></span>
+                            }
+                            @(IsNew ? "Create job" : "Save changes")
+                        </button>
+
+                        @if (!IsNew)
+                        {
+                            @if (confirmDelete)
+                            {
+                                <span class="text-danger small ms-auto">Delete this job?</span>
+                                <button type="button" class="btn btn-danger btn-sm" disabled="@busy" @onclick="DeleteAsync">Yes, delete</button>
+                                <button type="button" class="btn btn-outline-secondary btn-sm" @onclick="() => confirmDelete = false">Keep it</button>
+                            }
+                            else
+                            {
+                                <button type="button" class="btn btn-outline-danger ms-auto" disabled="@busy" @onclick="() => confirmDelete = true">
+                                    <i class="bi bi-trash3 me-1" aria-hidden="true"></i>Delete
+                                </button>
+                            }
+                        }
+                    </div>
+                }
+            </EditForm>
+        </section>
+
+        @if (detail is not null)
+        {
+            <div class="side-column">
+                <section class="panel">
+                    <header class="panel-header">
+                        <h2>Visits</h2>
+                        <span class="small text-body-secondary">@detail.Schedule.Done of @detail.Schedule.Total done</span>
+                    </header>
+
+                    <dl class="schedule-summary">
+                        <div>
+                            <dt>Next visit</dt>
+                            <dd>
+                                @if (detail.Schedule.NextVisit is { } next)
+                                {
+                                    @next.ToString("ddd, MMM d", CultureInfo.CurrentCulture)
+                                    @if (StatusWorkflow.IsActive(detail.Input.Status) && detail.Schedule.IsOverdue(today))
+                                    {
+                                        <span class="badge text-bg-danger ms-1">Overdue</span>
+                                    }
+                                }
+                                else
+                                {
+                                    <span class="text-body-secondary">None scheduled</span>
+                                }
+                            </dd>
+                        </div>
+                        <div>
+                            <dt>Last completed</dt>
+                            <dd>@(detail.Schedule.LastCompleted?.ToString("ddd, MMM d", CultureInfo.CurrentCulture) ?? "—")</dd>
+                        </div>
+                    </dl>
+
+                    @if (detail.Visits.Count == 0)
+                    {
+                        <p class="empty">No visits yet.</p>
+                    }
+                    else
+                    {
+                        <ul class="visit-list">
+                            @foreach (var visit in detail.Visits)
+                            {
+                                <li @key="(visit.Id, renderKey)" class="visit @(visit.IsDone ? "done" : "") @(!visit.IsDone && visit.Date < today ? "overdue" : "")">
+                                    <label class="visit-check">
+                                        <input type="checkbox" class="form-check-input" checked="@visit.IsDone"
+                                               disabled="@(!CanWork || busy || (!visit.IsDone && visit.Date > today))"
+                                               title="@(!visit.IsDone && visit.Date > today ? "A visit can be completed on or after its date" : null)"
+                                               @onchange="e => RunAsync(u => Jobs.SetVisitDoneAsync(visit.Id, e.Value is true, u))" />
+                                        <span>@visit.Date.ToString("ddd, MMM d", CultureInfo.CurrentCulture)</span>
+                                        @if (!visit.IsDone && visit.Date < today)
+                                        {
+                                            <span class="visually-hidden">, overdue</span>
+                                        }
+                                    </label>
+                                    <span class="visit-hours">
+                                        <input type="number" class="form-control form-control-sm" min="0" max="24" step="0.25"
+                                               placeholder="—" value="@HoursText(visit.Hours)" disabled="@(!CanWork || busy)"
+                                               aria-label="@($"Hours on {visit.Date:MMM d}")"
+                                               @onchange="e => RunAsync(u => Jobs.SetVisitHoursAsync(visit.Id, ParseHours(e.Value), u))" />
+                                        <span class="small text-body-secondary">h</span>
+                                    </span>
+                                    @if (CanEdit)
+                                    {
+                                        <button type="button" class="btn btn-icon btn-sm" title="Remove visit" aria-label="@($"Remove the visit on {visit.Date:MMM d}")"
+                                                disabled="@busy" @onclick="() => RunAsync(u => Jobs.RemoveVisitAsync(visit.Id, u))">
+                                            <i class="bi bi-x-lg" aria-hidden="true"></i>
+                                        </button>
+                                    }
+                                </li>
+                            }
+                        </ul>
+                    }
+
+                    @if (CanWork)
+                    {
+                        <div class="visit-add">
+                            <input type="date" class="form-control form-control-sm" aria-label="New visit date" @bind="newVisitDate" />
+                            <button type="button" class="btn btn-sm btn-outline-primary" disabled="@(busy || newVisitDate is null)" @onclick="AddVisitAsync">
+                                <i class="bi bi-plus-lg me-1" aria-hidden="true"></i>Add visit
+                            </button>
+                        </div>
+                    }
+                </section>
+
+                <section class="panel">
+                    <header class="panel-header"><h2>Activity</h2></header>
+                    <ol class="timeline">
+                        @foreach (var evt in detail.Events)
+                        {
+                            <li>
+                                <div class="timeline-head">
+                                    <span class="fw-semibold">@evt.ActorName</span>
+                                    <time class="small text-body-secondary">@evt.AtUtc.ToLocalTime().ToString("MMM d, HH:mm", CultureInfo.CurrentCulture)</time>
+                                </div>
+                                <div>@evt.Summary</div>
+                                @if (evt.Changes.Count > 0 && evt.Changes is not [{ Field: "Status" }])
+                                {
+                                    <ul class="changes">
+                                        @foreach (var change in evt.Changes)
+                                        {
+                                            <li>
+                                                <span class="change-field">@change.Field</span>
+                                                <del>@(change.Before ?? "empty")</del>
+                                                <i class="bi bi-arrow-right" aria-hidden="true"></i>
+                                                <ins>@(change.After ?? "empty")</ins>
+                                            </li>
+                                        }
+                                    </ul>
+                                }
+                            </li>
+                        }
+                    </ol>
+                </section>
+            </div>
+        }
+    </div>
+}
+
+@code {
+    [Parameter] public int? Id { get; set; }
+
+    [SupplyParameterFromQuery] public string? Back { get; set; }
+
+    private UserContext? user;
+    private IReadOnlyList<UserOption> technicians = [];
+    private JobDetail? detail;
+    private JobInput? model;
+    private int editVersion;
+    private DateOnly today;
+    private DateOnly? newVisitDate;
+    private int renderKey;
+    private bool notFound, busy, conflict, confirmDelete, messageIsError;
+    private string? message;
+    private int? loadedId = -1;
+
+    private bool IsNew => Id is null;
+    private bool CanEdit => user?.IsOffice == true;
+    private bool CanWork => user is not null && detail is not null
+        && JobService.CanChangeVisits(detail.Input.Status, detail.Input.AssigneeId, user);
+
+    private string TabTitle => IsNew ? "New job" : detail?.Reference ?? "Job";
+    private string Heading => detail is null ? "New job" : $"{detail.Reference} · {detail.Input.Title}";
+
+    // The back link returns to the exact list view the user came from - but only to a page on this site.
+    private string BackUrl => LocalUrl.IsLocal(Back) ? Back : "jobs";
+
+    private IEnumerable<JobStatus> StatusOptions => detail is null
+        ? [JobStatus.Quote, JobStatus.Scheduled]
+        : StatusWorkflow.NextSteps(detail.Input.Status).Prepend(detail.Input.Status);
+
+    protected override async Task OnInitializedAsync()
+    {
+        user = await Me.GetAsync();
+        technicians = await Jobs.FieldTechniciansAsync();
+        today = DateOnly.FromDateTime(Clock.GetLocalNow().DateTime);
+    }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        // The same component serves /jobs/new and /jobs/{id}; reload only when the job itself changes.
+        if (loadedId == Id) return;
+        loadedId = Id;
+        confirmDelete = false;
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        notFound = false;
+        conflict = false;
+
+        if (Id is not { } id)
+        {
+            detail = null;
+            model = new JobInput { Latitude = SeedData.Depot.Lat, Longitude = SeedData.Depot.Lng };
+            return;
+        }
+
+        detail = await Jobs.GetAsync(id);
+        if (detail is null)
+        {
+            notFound = true;
+            model = null;
+            return;
+        }
+
+        model = detail.Input.Clone();
+        editVersion = detail.Version;
+    }
+
+    private async Task SaveAsync()
+    {
+        if (model is null || user is null) return;
+        busy = true;
+        ClearMessage();
+        try
+        {
+            if (Id is not { } id)
+            {
+                var created = await Jobs.CreateAsync(model, user);
+                if (!created.IsOk)
+                {
+                    Show(created.Message, error: true);
+                    return;
+                }
+                Show("Job created.");
+                Navigation.NavigateTo($"jobs/{created.Value}", replace: true);
+                return;
+            }
+
+            var result = await Jobs.UpdateAsync(id, model, editVersion, user);
+            if (!result.IsOk)
+            {
+                conflict = result.Kind == ResultKind.Conflict;
+                Show(result.Message, error: true);
+                return;
+            }
+
+            await LoadAsync();
+            Show("Changes saved.");
+        }
+        finally
+        {
+            busy = false;
+        }
+    }
+
+    private async Task ReloadAsync()
+    {
+        await LoadAsync();
+        Show("Loaded the latest version. Your unsaved changes were discarded.");
+    }
+
+    private async Task DeleteAsync()
+    {
+        if (detail is null || user is null) return;
+        busy = true;
+        try
+        {
+            var result = await Jobs.DeleteAsync(detail.Id, user);
+            if (result.IsOk)
+            {
+                Navigation.NavigateTo(BackUrl, replace: true);
+                return;
+            }
+            confirmDelete = false;
+            Show(result.Message, error: true);
+        }
+        finally
+        {
+            busy = false;
+        }
+    }
+
+    private async Task AddVisitAsync()
+    {
+        if (newVisitDate is not { } date || detail is null) return;
+        var jobId = detail.Id;
+        await RunAsync(u => Jobs.AddVisitAsync(jobId, date, u));
+        if (!messageIsError) newVisitDate = null;
+    }
+
+    /// <summary>
+    /// Runs a visit command, then re-reads the visits and activity. The edit form is left alone, so a
+    /// half-finished edit survives a technician logging hours. The render key forces the visit rows to redraw
+    /// from server state, so a rejected change never leaves a checkbox showing a value that wasn't saved.
+    /// </summary>
+    private async Task RunAsync(Func<UserContext, Task<ServiceResult>> command)
+    {
+        if (user is null || detail is null) return;
+        busy = true;
+        ClearMessage();
+        try
+        {
+            var result = await command(user);
+            if (!result.IsOk) Show(result.Message, error: true);
+            detail = await Jobs.GetAsync(detail.Id) ?? detail;
+            renderKey++;
+        }
+        finally
+        {
+            busy = false;
+        }
+    }
+
+    private void Show(string? text, bool error = false)
+    {
+        message = text;
+        messageIsError = error;
+    }
+
+    private void ClearMessage()
+    {
+        message = null;
+        messageIsError = false;
+        conflict = false;
+    }
+
+    private static string HoursText(double? hours) => hours?.ToString("0.##", CultureInfo.InvariantCulture) ?? string.Empty;
+
+    private static double? ParseHours(object? value) =>
+        double.TryParse(value as string, NumberStyles.Float, CultureInfo.InvariantCulture, out var hours) ? hours : null;
+}

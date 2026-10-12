@@ -1,0 +1,247 @@
+@page "/chat"
+@page "/chat/{With:int}"
+@implements IDisposable
+@inject ChatService ChatService
+@inject ChatNotifier Notifier
+@inject PresenceTracker Presence
+@inject CurrentUser Me
+@inject IJSRuntime JS
+
+<PageTitle>Team chat · FieldOps</PageTitle>
+
+<div class="page-header">
+    <div>
+        <h1>Team chat</h1>
+        <p class="page-subtitle">Messages arrive live. Tick a message once it's handled so both of you can see what still needs attention.</p>
+    </div>
+</div>
+
+@if (me is null)
+{
+    <div class="loading"><span class="spinner-border spinner-border-sm" aria-hidden="true"></span> Loading…</div>
+}
+else
+{
+    <div class="chat @(With is null ? "" : "chat-open")">
+        <aside class="chat-contacts" aria-label="People">
+            @foreach (var contact in contacts)
+            {
+                <a @key="contact.UserId" class="chat-contact @(contact.UserId == With ? "active" : "")" href="@($"chat/{contact.UserId}")">
+                    <span class="avatar-wrap">
+                        <span class="avatar">@AppUser.InitialsOf(contact.Name)</span>
+                        <span class="presence @(contact.IsOnline ? "online" : "")" title="@(contact.IsOnline ? "Online" : "Offline")"></span>
+                        <span class="visually-hidden">@(contact.IsOnline ? "online" : "offline")</span>
+                    </span>
+                    <span class="chat-contact-text">
+                        <span class="chat-contact-name">@contact.Name</span>
+                        <span class="chat-contact-title">@contact.Title</span>
+                    </span>
+                    @if (contact.Unread > 0)
+                    {
+                        <span class="nav-badge">@contact.Unread <span class="visually-hidden">unread</span></span>
+                    }
+                </a>
+            }
+        </aside>
+
+        <section class="chat-thread" aria-label="Conversation">
+            @if (With is null || partner is null)
+            {
+                <div class="chat-placeholder">
+                    <i class="bi bi-chat-square-text" aria-hidden="true"></i>
+                    <p>Pick someone to start a conversation.</p>
+                </div>
+            }
+            else
+            {
+                <header class="chat-thread-header">
+                    <a class="btn btn-icon d-md-none" href="chat" aria-label="Back to people"><i class="bi bi-arrow-left" aria-hidden="true"></i></a>
+                    <span class="avatar">@AppUser.InitialsOf(partner.Name)</span>
+                    <div>
+                        <div class="fw-semibold">@partner.Name</div>
+                        <div class="small text-body-secondary">@(partner.IsOnline ? "Online now" : partner.Title)</div>
+                    </div>
+                </header>
+
+                <div class="chat-messages" @ref="scroller" aria-live="polite">
+                    @if (lines.Count == 0)
+                    {
+                        <p class="chat-empty">No messages yet. Say hello.</p>
+                    }
+                    @foreach (var line in lines)
+                    {
+                        var mine = line.FromId == me.Id;
+                        <div @key="line.Id" class="message-row @(mine ? "mine" : "theirs")">
+                            <div class="message @(line.IsDone ? "is-done" : "")">
+                                <p class="message-body">@line.Body</p>
+                                <div class="message-meta">
+                                    <time>@line.SentUtc.ToLocalTime().ToString("MMM d, HH:mm", CultureInfo.CurrentCulture)</time>
+                                    @if (!line.IsDone)
+                                    {
+                                        <button type="button" class="message-action" title="Mark as handled"
+                                                aria-label="@($"Mark the message sent {line.SentUtc.ToLocalTime().ToString("MMM d, HH:mm", CultureInfo.CurrentCulture)} as handled")"
+                                                @onclick="() => SetDoneAsync(line, true)">
+                                            <i class="bi bi-check2-circle" aria-hidden="true"></i>
+                                        </button>
+                                    }
+                                </div>
+                                @if (line.IsDone)
+                                {
+                                    <div class="message-done">
+                                        <i class="bi bi-check2-circle" aria-hidden="true"></i>
+                                        Handled by @line.DoneByName · @(line.DoneUtc?.ToLocalTime().ToString("MMM d, HH:mm", CultureInfo.CurrentCulture)) ·
+                                        <button type="button" class="link-button" @onclick="() => SetDoneAsync(line, false)">Undo</button>
+                                    </div>
+                                }
+                            </div>
+                        </div>
+                    }
+                </div>
+
+                <form class="chat-composer" @onsubmit="SendAsync">
+                    <label class="visually-hidden" for="chat-input">Message</label>
+                    <input id="chat-input" class="form-control" autocomplete="off" maxlength="@ChatService.MaxLength"
+                           placeholder="@($"Message {partner.Name}")" @bind="draft" @bind:event="oninput" />
+                    <button type="submit" class="btn btn-primary" disabled="@(sending || string.IsNullOrWhiteSpace(draft))">
+                        <i class="bi bi-send" aria-hidden="true"></i><span class="visually-hidden">Send</span>
+                    </button>
+                </form>
+                @if (error is not null)
+                {
+                    <div class="small text-danger px-3 pb-2">@error</div>
+                }
+            }
+        </section>
+    </div>
+}
+
+@code {
+    [Parameter] public int? With { get; set; }
+
+    private UserContext? me;
+    private IReadOnlyList<ChatContact> contacts = [];
+    private IReadOnlyList<ChatLine> lines = [];
+    private ChatContact? partner;
+    private ElementReference scroller;
+    private string draft = string.Empty;
+    private string? error;
+    private bool sending;
+    private bool scrollToEnd;
+
+    protected override async Task OnInitializedAsync()
+    {
+        me = await Me.GetAsync();
+        Notifier.MessageSent += OnMessageSent;
+        Notifier.MessageUpdated += OnMessageUpdated;
+        Presence.Changed += OnPresenceChanged;
+    }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (me is null) return;
+        error = null;
+        await LoadThreadAsync(markRead: true);
+        await LoadContactsAsync();
+        scrollToEnd = true;
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!scrollToEnd) return;
+        scrollToEnd = false;
+        // The browser may already have gone; there is nothing left to scroll.
+        try { await JS.InvokeVoidAsync("fieldops.scrollToBottom", scroller); }
+        catch (JSDisconnectedException) { }
+    }
+
+    private async Task LoadContactsAsync()
+    {
+        contacts = await ChatService.ContactsAsync(me!.Id);
+        partner = contacts.FirstOrDefault(c => c.UserId == With);
+    }
+
+    private async Task LoadThreadAsync(bool markRead)
+    {
+        if (With is not { } other)
+        {
+            lines = [];
+            return;
+        }
+        if (markRead) await ChatService.MarkReadAsync(me!.Id, other);
+        lines = await ChatService.ConversationAsync(me!.Id, other);
+    }
+
+    private async Task SendAsync()
+    {
+        if (me is null || With is not { } other || string.IsNullOrWhiteSpace(draft)) return;
+        sending = true;
+        error = null;
+        try
+        {
+            var result = await ChatService.SendAsync(me.Id, other, draft);
+            if (!result.IsOk)
+            {
+                error = result.Message;
+                return;
+            }
+            draft = string.Empty;
+        }
+        finally
+        {
+            sending = false;
+        }
+    }
+
+    private async Task SetDoneAsync(ChatLine line, bool done)
+    {
+        if (me is null) return;
+        var result = await ChatService.SetDoneAsync(me.Id, line.Id, done);
+        error = result.IsOk ? null : result.Message;
+    }
+
+    // A new message in any conversation that involves me: refresh the people list, and the open thread if it is
+    // the one the message belongs to. These handlers run on the sender's thread, so the work is marshalled
+    // onto this circuit with InvokeAsync.
+    private void OnMessageSent(int fromId, int toId)
+    {
+        if (me is null || (fromId != me.Id && toId != me.Id)) return;
+        var inThread = With is { } other && (fromId == other || toId == other);
+        _ = InvokeAsync(async () =>
+        {
+            if (inThread)
+            {
+                await LoadThreadAsync(markRead: true);
+                scrollToEnd = true;
+            }
+            await LoadContactsAsync();
+            StateHasChanged();
+        });
+    }
+
+    // A message was marked handled or reopened: redraw the thread in place. No scrolling, and no unread change.
+    private void OnMessageUpdated(int userA, int userB)
+    {
+        if (me is null || With is not { } other) return;
+        var isThisThread = (userA == me.Id && userB == other) || (userA == other && userB == me.Id);
+        if (!isThisThread) return;
+        _ = InvokeAsync(async () =>
+        {
+            await LoadThreadAsync(markRead: false);
+            StateHasChanged();
+        });
+    }
+
+    private void OnPresenceChanged() => _ = InvokeAsync(async () =>
+    {
+        if (me is null) return;
+        await LoadContactsAsync();
+        StateHasChanged();
+    });
+
+    public void Dispose()
+    {
+        Notifier.MessageSent -= OnMessageSent;
+        Notifier.MessageUpdated -= OnMessageUpdated;
+        Presence.Changed -= OnPresenceChanged;
+    }
+}

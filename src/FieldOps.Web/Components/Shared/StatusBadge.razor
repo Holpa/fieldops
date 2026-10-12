@@ -1,0 +1,6 @@
+<span class="status-badge status-@Status.CssKey()">@Status.Label()</span>
+
+@code {
+    [Parameter, EditorRequired]
+    public JobStatus Status { get; set; }
+}

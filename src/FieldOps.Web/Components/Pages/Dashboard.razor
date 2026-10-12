@@ -1,0 +1,150 @@
+@page "/"
+@inject DashboardService DashboardService
+@inject TimeProvider Clock
+
+<PageTitle>Dashboard · FieldOps</PageTitle>
+
+<div class="page-header">
+    <div>
+        <h1>Dashboard</h1>
+        <p class="page-subtitle">Today is @Clock.GetLocalNow().ToString("dddd, MMMM d", CultureInfo.CurrentCulture).</p>
+    </div>
+</div>
+
+@if (data is null)
+{
+    <div class="loading"><span class="spinner-border spinner-border-sm" aria-hidden="true"></span> Loading…</div>
+}
+else
+{
+    <div class="kpi-grid">
+        <a class="kpi" href="jobs?open=true">
+            <span class="kpi-icon kpi-blue"><i class="bi bi-briefcase" aria-hidden="true"></i></span>
+            <span class="kpi-value">@data.OpenJobs</span>
+            <span class="kpi-label">Open jobs</span>
+        </a>
+        <a class="kpi" href="route">
+            <span class="kpi-icon kpi-teal"><i class="bi bi-calendar-week" aria-hidden="true"></i></span>
+            <span class="kpi-value">@data.VisitsThisWeek</span>
+            <span class="kpi-label">Visits in the next 7 days</span>
+        </a>
+        <a class="kpi" href="jobs?overdue=true">
+            <span class="kpi-icon @(data.OverdueJobs > 0 ? "kpi-red" : "kpi-green")"><i class="bi bi-exclamation-triangle" aria-hidden="true"></i></span>
+            <span class="kpi-value">@data.OverdueJobs</span>
+            <span class="kpi-label">Jobs with an overdue visit</span>
+        </a>
+        <div class="kpi">
+            <span class="kpi-icon kpi-violet"><i class="bi bi-stopwatch" aria-hidden="true"></i></span>
+            <span class="kpi-value">@data.HoursThisMonth.ToString("0.#", CultureInfo.CurrentCulture)</span>
+            <span class="kpi-label">Hours logged this month</span>
+        </div>
+    </div>
+
+    <div class="dash-grid">
+        <section class="panel panel-wide">
+            <header class="panel-header">
+                <h2>New jobs per month</h2>
+                <span class="legend"><span class="legend-swatch bar"></span>Actual <span class="legend-swatch projection"></span>Projected</span>
+            </header>
+            <BarChart Bars="data.Intake" Projection="data.Forecast.NextValue" Title="New jobs per month, last twelve months and the current month" />
+            @if (data.Forecast.IsProjected)
+            {
+                <p class="panel-note">
+                    <i class="bi bi-graph-up-arrow" aria-hidden="true"></i>
+                    Trend: <strong>@data.Forecast.Slope.ToString("+0.0;-0.0;0.0", CultureInfo.CurrentCulture) jobs a month</strong>,
+                    which projects about <strong>@Math.Round(data.Forecast.NextValue ?? 0)</strong> for @data.ForecastMonth
+                    (±@data.Forecast.Rmse.ToString("0.0", CultureInfo.CurrentCulture); the line explains @data.Forecast.RSquared.ToString("P0", CultureInfo.CurrentCulture) of the variation).
+                </p>
+            }
+            else
+            {
+                <p class="panel-note">
+                    <i class="bi bi-slash-circle" aria-hidden="true"></i>
+                    No projection for @data.ForecastMonth: @data.Forecast.RefusalReason
+                </p>
+            }
+        </section>
+
+        <section class="panel">
+            <header class="panel-header"><h2>Open work by status</h2></header>
+            @{
+                var maxCount = Math.Max(1, data.OpenByStatus.Max(s => s.Count));
+            }
+            <ul class="status-bars">
+                @foreach (var s in data.OpenByStatus)
+                {
+                    <li>
+                        <a href="@($"jobs?status={s.Status}")">
+                            <span class="status-bars-label">@s.Status.Label()</span>
+                            <span class="status-bars-track">
+                                <span class="status-bars-fill status-@s.Status.CssKey()" style="width:@((s.Count * 100.0 / maxCount).ToString("0.#", CultureInfo.InvariantCulture))%"></span>
+                            </span>
+                            <span class="status-bars-count">@s.Count</span>
+                        </a>
+                    </li>
+                }
+            </ul>
+        </section>
+
+        <section class="panel">
+            <header class="panel-header"><h2>Coming up this week</h2></header>
+            @if (data.Upcoming.Count == 0)
+            {
+                <p class="empty">Nothing scheduled in the next seven days.</p>
+            }
+            else
+            {
+                <ul class="upcoming">
+                    @foreach (var v in data.Upcoming)
+                    {
+                        <li>
+                            <span class="date-chip">
+                                <span>@v.Date.ToString("MMM", CultureInfo.CurrentCulture)</span>
+                                <strong>@v.Date.Day</strong>
+                            </span>
+                            <a href="@($"jobs/{v.JobId}")">
+                                <span class="fw-semibold">@v.Reference</span> · @v.Title
+                                <span class="d-block small text-body-secondary">@(v.Technician ?? "Unassigned")</span>
+                            </a>
+                        </li>
+                    }
+                </ul>
+            }
+        </section>
+
+        <section class="panel">
+            <header class="panel-header"><h2>Technician workload</h2></header>
+            <table class="table table-sm align-middle mb-0">
+                <thead>
+                    <tr><th scope="col">Technician</th><th scope="col" class="text-end">Open</th><th scope="col" class="text-end">This week</th><th scope="col" class="text-end">Overdue</th></tr>
+                </thead>
+                <tbody>
+                    @foreach (var w in data.Workloads)
+                    {
+                        <tr>
+                            <td><a href="@($"jobs?assignee={w.UserId}&open=true")">@w.Name</a></td>
+                            <td class="text-end">@w.OpenJobs</td>
+                            <td class="text-end">@w.VisitsThisWeek</td>
+                            <td class="text-end">
+                                @if (w.Overdue > 0)
+                                {
+                                    <span class="text-danger fw-semibold">@w.Overdue</span>
+                                }
+                                else
+                                {
+                                    <span class="text-body-secondary">0</span>
+                                }
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </section>
+    </div>
+}
+
+@code {
+    private DashboardData? data;
+
+    protected override async Task OnInitializedAsync() => data = await DashboardService.LoadAsync();
+}

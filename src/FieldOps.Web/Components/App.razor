@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en" data-bs-theme="@Theme">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <base href="/" />
+    <ResourcePreloader />
+    <link rel="stylesheet" href="@Assets["lib/bootstrap/dist/css/bootstrap.min.css"]" />
+    <link rel="stylesheet" href="@Assets["lib/bootstrap-icons/bootstrap-icons.css"]" />
+    <link rel="stylesheet" href="@Assets["css/app.css"]" />
+    <link rel="stylesheet" href="@Assets["FieldOps.Web.styles.css"]" />
+    <ImportMap />
+    <link rel="icon" type="image/png" href="favicon.png" />
+    <HeadOutlet @rendermode="PageRenderMode" />
+</head>
+
+<body>
+    <Routes @rendermode="PageRenderMode" />
+    <ReconnectModal />
+    <script src="@Assets["js/app.js"]"></script>
+    <script src="@Assets["_framework/blazor.web.js"]"></script>
+</body>
+
+</html>
+
+@code {
+    [CascadingParameter]
+    private HttpContext HttpContext { get; set; } = default!;
+
+    // Stamped on the server from a cookie, so every page arrives already themed: no light flash in dark mode.
+    private string Theme => HttpContext.Request.Cookies["fieldops-theme"] == "dark" ? "dark" : "light";
+
+    // Pages marked [ExcludeFromInteractiveRouting] (sign-in, which sets a cookie through a form post, and the
+    // error page) are plain server-rendered HTML. Every other page runs over the Blazor Server circuit.
+    private IComponentRenderMode? PageRenderMode =>
+        HttpContext.AcceptsInteractiveRouting() ? InteractiveServer : null;
+}

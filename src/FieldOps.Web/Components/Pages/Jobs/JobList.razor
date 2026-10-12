@@ -1,0 +1,245 @@
+@page "/jobs"
+@inject JobService Jobs
+@inject NavigationManager Navigation
+
+<PageTitle>Jobs · FieldOps</PageTitle>
+
+<div class="page-header">
+    <div>
+        <h1>Jobs</h1>
+        <p class="page-subtitle">
+            @if (result is not null)
+            {
+                <span>@Summary</span>
+            }
+        </p>
+    </div>
+    <AuthorizeView Policy="@Policies.Office">
+        <a class="btn btn-primary" href="jobs/new"><i class="bi bi-plus-lg me-1" aria-hidden="true"></i>New job</a>
+    </AuthorizeView>
+</div>
+
+<div class="toolbar">
+    <form class="toolbar-search" role="search" @onsubmit="ApplySearch">
+        <i class="bi bi-search" aria-hidden="true"></i>
+        <input type="search" class="form-control" placeholder="Search reference, title, client, address or city"
+               aria-label="Search jobs" @bind="searchText" />
+    </form>
+
+    <select class="form-select toolbar-select" aria-label="Status" value="@(Status ?? "")"
+            @onchange="e => Go(f => f.Status = e.Value as string)">
+        <option value="">All statuses</option>
+        @foreach (var s in Enum.GetValues<JobStatus>())
+        {
+            <option value="@s">@s.Label()</option>
+        }
+    </select>
+
+    <select class="form-select toolbar-select" aria-label="Technician" value="@(Assignee?.ToString(CultureInfo.InvariantCulture) ?? "")"
+            @onchange="e => Go(f => f.Assignee = int.TryParse(e.Value as string, out var id) ? id : null)">
+        <option value="">All technicians</option>
+        @foreach (var t in technicians)
+        {
+            <option value="@t.Id">@t.Name</option>
+        }
+    </select>
+
+    <div class="toolbar-toggles">
+        <label class="form-check form-switch m-0">
+            <input class="form-check-input" type="checkbox" role="switch" checked="@(Open == true)"
+                   @onchange="e => Go(f => f.Open = e.Value is true)" />
+            <span class="form-check-label">Open only</span>
+        </label>
+        <label class="form-check form-switch m-0">
+            <input class="form-check-input" type="checkbox" role="switch" checked="@(Overdue == true)"
+                   @onchange="e => Go(f => f.Overdue = e.Value is true)" />
+            <span class="form-check-label">Overdue</span>
+        </label>
+    </div>
+
+    @if (HasFilters)
+    {
+        <button type="button" class="btn btn-link btn-sm" @onclick="Clear">Clear filters</button>
+    }
+</div>
+
+@if (result is null)
+{
+    <div class="loading"><span class="spinner-border spinner-border-sm" aria-hidden="true"></span> Loading…</div>
+}
+else if (result.Items.Count == 0)
+{
+    <div class="empty-state">
+        <i class="bi bi-search" aria-hidden="true"></i>
+        <p>No jobs match. Try a different search or clear the filters.</p>
+    </div>
+}
+else
+{
+    <div class="table-card">
+        <table class="table table-hover align-middle mb-0 jobs-table">
+            <thead>
+                <tr>
+                    @SortHeader("ref", "Job")
+                    @SortHeader("title", "Title / client")
+                    @SortHeader("city", "City", "d-none d-md-table-cell")
+                    @SortHeader("status", "Status")
+                    <th scope="col" class="d-none d-lg-table-cell">Technician</th>
+                    @SortHeader("next", "Next visit")
+                    @SortHeader("updated", "Updated", "d-none d-xl-table-cell")
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var job in result.Items)
+                {
+                    <tr @key="job.Id">
+                        <td><a class="job-ref" href="@DetailUrl(job.Id)">@job.Reference</a></td>
+                        <td>
+                            <a class="row-link" href="@DetailUrl(job.Id)">@job.Title</a>
+                            <span class="d-block small text-body-secondary">@job.Client</span>
+                        </td>
+                        <td class="d-none d-md-table-cell">@job.City</td>
+                        <td><StatusBadge Status="job.Status" /></td>
+                        <td class="d-none d-lg-table-cell">@(job.AssigneeName ?? "—")</td>
+                        <td>
+                            @if (job.NextVisit is { } next)
+                            {
+                                <span class="@(job.IsOverdue ? "text-danger fw-semibold" : "")">
+                                    @if (job.IsOverdue)
+                                    {
+                                        <i class="bi bi-exclamation-circle me-1" aria-hidden="true"></i><span class="visually-hidden">Overdue: </span>
+                                    }
+                                    @next.ToString("MMM d", CultureInfo.CurrentCulture)
+                                </span>
+                            }
+                            else
+                            {
+                                <span class="text-body-secondary">—</span>
+                            }
+                        </td>
+                        <td class="d-none d-xl-table-cell text-body-secondary">@job.UpdatedUtc.ToLocalTime().ToString("MMM d, yyyy", CultureInfo.CurrentCulture)</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+
+    <Pager Page="result.Page" TotalPages="result.TotalPages" PageChanged="p => Go(f => f.Page = p, keepPage: true)" />
+}
+
+@code {
+    private PagedResult<JobRow>? result;
+    private IReadOnlyList<UserOption> technicians = [];
+    private string? searchText;
+    private int loadVersion;
+
+    // Every filter lives in the URL, so Back, refresh and bookmarks all return to exactly this view.
+    [SupplyParameterFromQuery] public string? Q { get; set; }
+    [SupplyParameterFromQuery] public string? Status { get; set; }
+    [SupplyParameterFromQuery] public int? Assignee { get; set; }
+    [SupplyParameterFromQuery] public bool? Open { get; set; }
+    [SupplyParameterFromQuery] public bool? Overdue { get; set; }
+    [SupplyParameterFromQuery] public string? Sort { get; set; }
+    [SupplyParameterFromQuery] public bool? Desc { get; set; }
+    [SupplyParameterFromQuery] public int? Page { get; set; }
+
+    private bool HasFilters =>
+        !string.IsNullOrWhiteSpace(Q) || !string.IsNullOrEmpty(Status) || Assignee is not null || Open == true || Overdue == true;
+
+    private string Summary =>
+        $"{result?.Total} {(result?.Total == 1 ? "job" : "jobs")}{(HasFilters ? " match these filters" : "")}";
+
+    protected override async Task OnInitializedAsync() => technicians = await Jobs.FieldTechniciansAsync();
+
+    protected override async Task OnParametersSetAsync()
+    {
+        searchText = Q;
+
+        // Parameters can change again while a load is in flight; only the newest load may update the page.
+        int version = ++loadVersion;
+        var loaded = await Jobs.SearchAsync(new JobQuery
+        {
+            Q = Q,
+            Status = Enum.TryParse<JobStatus>(Status, out var s) ? s : null,
+            Assignee = Assignee,
+            Open = Open == true,
+            Overdue = Overdue == true,
+            Sort = Sort,
+            Desc = Desc == true,
+            Page = Page ?? 1,
+        });
+        if (version == loadVersion) result = loaded;
+    }
+
+    private void ApplySearch() => Go(f => f.Q = searchText?.Trim());
+
+    private void Clear() => Navigation.NavigateTo("jobs", replace: true);
+
+    private sealed class Filters
+    {
+        public string? Q { get; set; }
+        public string? Status { get; set; }
+        public int? Assignee { get; set; }
+        public bool Open { get; set; }
+        public bool Overdue { get; set; }
+        public string? Sort { get; set; }
+        public bool Desc { get; set; }
+        public int Page { get; set; } = 1;
+    }
+
+    /// <summary>
+    /// Applies one change to the current filters and writes them back into the URL. Changing any filter goes
+    /// back to page 1. Replacing the history entry keeps Back meaningful: it leaves the list rather than
+    /// stepping back through every filter click.
+    /// </summary>
+    private void Go(Action<Filters> change, bool keepPage = false)
+    {
+        var f = new Filters
+        {
+            Q = Q,
+            Status = Status,
+            Assignee = Assignee,
+            Open = Open == true,
+            Overdue = Overdue == true,
+            Sort = Sort,
+            Desc = Desc == true,
+            Page = keepPage ? Page ?? 1 : 1,
+        };
+        change(f);
+
+        var values = new Dictionary<string, object?>
+        {
+            ["q"] = string.IsNullOrWhiteSpace(f.Q) ? null : f.Q,
+            ["status"] = string.IsNullOrEmpty(f.Status) ? null : f.Status,
+            ["assignee"] = f.Assignee,
+            ["open"] = f.Open ? true : null,
+            ["overdue"] = f.Overdue ? true : null,
+            ["sort"] = f.Sort,
+            ["desc"] = f.Desc ? true : null,
+            ["page"] = f.Page > 1 ? f.Page : null,
+        };
+        Navigation.NavigateTo(Navigation.GetUriWithQueryParameters(values), replace: true);
+    }
+
+    private RenderFragment SortHeader(string key, string label, string? css = null) => __builder =>
+    {
+        // With no sort chosen the list is newest-updated first, so the Updated header shows that order.
+        bool isDefault = string.IsNullOrEmpty(Sort);
+        bool active = (isDefault ? "updated" : Sort) == key;
+        bool desc = isDefault || Desc == true;
+        string direction = active ? (desc ? "descending" : "ascending") : "none";
+        <th scope="col" class="@css" aria-sort="@direction">
+            <button type="button" class="sort-button" @onclick="() => Go(f => { f.Desc = f.Sort == key && !f.Desc; f.Sort = key; })">
+                @label
+                <i class="bi @(active ? (desc ? "bi-caret-down-fill" : "bi-caret-up-fill") : "bi-chevron-expand") sort-icon" aria-hidden="true"></i>
+            </button>
+        </th>
+    };
+
+    // The job page gets this exact list URL as its "back" link, filters and page included.
+    private string DetailUrl(int id)
+    {
+        var back = "/" + Navigation.ToBaseRelativePath(Navigation.Uri);
+        return $"jobs/{id}?back={Uri.EscapeDataString(back)}";
+    }
+}

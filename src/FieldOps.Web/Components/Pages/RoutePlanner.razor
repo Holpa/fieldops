@@ -1,0 +1,208 @@
+@page "/route"
+@inject RouteService Routes
+@inject JobService Jobs
+@inject CurrentUser Me
+@inject NavigationManager Navigation
+
+<PageTitle>Route planner · FieldOps</PageTitle>
+
+<div class="page-header">
+    <div>
+        <h1>Route planner</h1>
+        <p class="page-subtitle">The day's stops in a short driving order, starting from the depot. Straight-line distances, no map service needed.</p>
+    </div>
+</div>
+
+@if (user is null)
+{
+    <div class="loading"><span class="spinner-border spinner-border-sm" aria-hidden="true"></span> Loading…</div>
+}
+else
+{
+    <div class="toolbar">
+        @if (user.IsOffice)
+        {
+            <select class="form-select toolbar-select" aria-label="Technician" value="@technicianId"
+                    @onchange="e => Go(int.TryParse(e.Value as string, out var id) ? id : technicianId, date)">
+                @foreach (var t in technicians)
+                {
+                    <option value="@t.Id">@t.Name</option>
+                }
+            </select>
+        }
+        else
+        {
+            <span class="toolbar-label"><i class="bi bi-person me-1" aria-hidden="true"></i>@user.Name</span>
+        }
+
+        <div class="btn-group" role="group" aria-label="Day">
+            <button type="button" class="btn btn-outline-secondary" aria-label="Previous day" @onclick="() => Go(technicianId, date.AddDays(-1))">
+                <i class="bi bi-chevron-left" aria-hidden="true"></i>
+            </button>
+            <input type="date" class="form-control route-date" aria-label="Date" value="@date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)"
+                   @onchange="e => Go(technicianId, DateOnly.TryParse(e.Value as string, CultureInfo.InvariantCulture, out var d) ? d : date)" />
+            <button type="button" class="btn btn-outline-secondary" aria-label="Next day" @onclick="() => Go(technicianId, date.AddDays(1))">
+                <i class="bi bi-chevron-right" aria-hidden="true"></i>
+            </button>
+        </div>
+
+        @if (upcomingDays.Count > 0)
+        {
+            <div class="day-chips" role="group" aria-label="Days with stops">
+                @foreach (var day in upcomingDays)
+                {
+                    <button type="button" class="day-chip @(day == date ? "active" : "")" aria-current="@(day == date ? "true" : null)"
+                            @onclick="() => Go(technicianId, day)">
+                        @(day == Routes.Today ? "Today" : day.ToString("ddd d", CultureInfo.CurrentCulture))
+                    </button>
+                }
+            </div>
+        }
+    </div>
+
+    @if (message is not null)
+    {
+        <div class="alert alert-danger py-2" role="alert">@message</div>
+    }
+
+    @if (route is null)
+    {
+        <div class="loading"><span class="spinner-border spinner-border-sm" aria-hidden="true"></span> Planning…</div>
+    }
+    else if (route.Stops.Count == 0)
+    {
+        <div class="empty-state">
+            <i class="bi bi-cup-hot" aria-hidden="true"></i>
+            <p>No stops on @date.ToString("dddd, MMMM d", CultureInfo.CurrentCulture). Pick one of the highlighted days above.</p>
+        </div>
+    }
+    else
+    {
+        <div class="kpi-grid kpi-grid-compact">
+            <div class="kpi">
+                <span class="kpi-value">@route.Stops.Count</span>
+                <span class="kpi-label">Stops (@route.Stops.Count(s => s.IsDone) done)</span>
+            </div>
+            <div class="kpi">
+                <span class="kpi-value">@Km(route.Plan!.TotalKm)</span>
+                <span class="kpi-label">Planned route</span>
+            </div>
+            <div class="kpi">
+                <span class="kpi-value text-body-secondary">@Km(route.Plan.OriginalKm)</span>
+                <span class="kpi-label">In booking order</span>
+            </div>
+            <div class="kpi">
+                <span class="kpi-value text-success">@route.Plan.SavedPercent.ToString("0", CultureInfo.CurrentCulture)%</span>
+                <span class="kpi-label">Shorter (@Km(route.Plan.SavedKm) saved)</span>
+            </div>
+        </div>
+
+        <div class="route-grid">
+            <section class="panel">
+                <RouteMap Depot="route.Depot" Stops="route.Stops" />
+            </section>
+
+            <section class="panel">
+                <header class="panel-header"><h2>Stops in order</h2></header>
+                <ol class="stop-list">
+                    @for (int i = 0; i < route.Stops.Count; i++)
+                    {
+                        var stop = route.Stops[i];
+                        var number = i + 1;
+                        <li @key="(stop.VisitId, renderKey)" class="@(stop.IsDone ? "done" : "")">
+                            <span class="stop-number">@number</span>
+                            <div class="stop-body">
+                                <a class="fw-semibold" href="@($"jobs/{stop.JobId}")">@stop.Reference · @stop.Title</a>
+                                <span class="d-block small text-body-secondary">@stop.Client - @stop.Address</span>
+                                <span class="d-block small text-body-secondary">
+                                    <i class="bi bi-arrow-return-right" aria-hidden="true"></i> @Km(stop.LegKm) from @(number == 1 ? "the depot" : $"stop {number - 1}")
+                                </span>
+                            </div>
+                            <label class="stop-done">
+                                <input type="checkbox" class="form-check-input" checked="@stop.IsDone"
+                                       disabled="@(busy || !CanChange(stop) || (!stop.IsDone && date > Routes.Today))"
+                                       @onchange="e => SetDoneAsync(stop, e.Value is true)" />
+                                <span>Done</span>
+                            </label>
+                        </li>
+                    }
+                </ol>
+            </section>
+        </div>
+    }
+}
+
+@code {
+    [SupplyParameterFromQuery] public int? Tech { get; set; }
+    [SupplyParameterFromQuery(Name = "date")] public string? DateText { get; set; }
+
+    private UserContext? user;
+    private IReadOnlyList<UserOption> technicians = [];
+    private IReadOnlyList<DateOnly> upcomingDays = [];
+    private RouteDay? route;
+    private int technicianId;
+    private DateOnly date;
+    private bool busy;
+    private int renderKey;
+    private int loadVersion;
+    private string? message;
+
+    protected override async Task OnInitializedAsync()
+    {
+        user = await Me.GetAsync();
+        technicians = await Jobs.FieldTechniciansAsync();
+    }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (user is null) return;
+
+        // Field technicians always see their own route; office staff can pick anyone.
+        technicianId = !user.IsOffice ? user.Id
+            : Tech is { } t && technicians.Any(x => x.Id == t) ? t
+            : technicians.FirstOrDefault()?.Id ?? 0;
+        date = DateOnly.TryParseExact(DateText, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var d) ? d : Routes.Today;
+
+        // Parameters can change again while a load is in flight; only the newest load may update the page.
+        int version = ++loadVersion;
+        route = null;
+        var days = await Routes.UpcomingDaysAsync(technicianId);
+        var plan = await Routes.PlanAsync(technicianId, date);
+        if (version != loadVersion) return;
+        upcomingDays = days;
+        route = plan;
+    }
+
+    private void Go(int technician, DateOnly day)
+    {
+        var values = new Dictionary<string, object?>
+        {
+            ["tech"] = user?.IsOffice == true ? technician : null,
+            ["date"] = day == Routes.Today ? null : day.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+        };
+        Navigation.NavigateTo(Navigation.GetUriWithQueryParameters(values), replace: true);
+    }
+
+    private async Task SetDoneAsync(RouteStop stop, bool done)
+    {
+        if (user is null) return;
+        busy = true;
+        message = null;
+        try
+        {
+            var result = await Jobs.SetVisitDoneAsync(stop.VisitId, done, user);
+            if (!result.IsOk) message = result.Message;
+            route = await Routes.PlanAsync(technicianId, date);
+            renderKey++;
+        }
+        finally
+        {
+            busy = false;
+        }
+    }
+
+    // Every stop on the route belongs to the selected technician; closed jobs are the office's to change.
+    private bool CanChange(RouteStop stop) => user is not null && JobService.CanChangeVisits(stop.Status, technicianId, user);
+
+    private static string Km(double km) => $"{km.ToString("0.0", CultureInfo.CurrentCulture)} km";
+}
