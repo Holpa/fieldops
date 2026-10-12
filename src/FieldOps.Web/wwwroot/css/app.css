@@ -231,6 +231,7 @@ a {
     padding: 1.5rem;
     max-width: 1480px;
     width: 100%;
+    margin-inline: auto;
 }
 
 .btn-icon {
