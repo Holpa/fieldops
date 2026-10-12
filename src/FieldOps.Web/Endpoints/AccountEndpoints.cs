@@ -15,27 +15,36 @@ namespace FieldOps.Web.Endpoints;
 /// </summary>
 public static class AccountEndpoints
 {
+    /// <summary>Rate-limit policy for sign-in posts: 10 a minute per client address (set up in Program.cs).</summary>
+    public const string RateLimitPolicy = "signin";
+
     public static IEndpointRouteBuilder MapAccountEndpoints(this IEndpointRouteBuilder app)
     {
         app.MapPost("/account/signin", async (
                 [FromForm] int userId,
                 [FromForm] string? returnUrl,
                 HttpContext http,
-                IDbContextFactory<AppDbContext> dbFactory) =>
+                IDbContextFactory<AppDbContext> dbFactory,
+                TimeProvider clock,
+                ILoggerFactory loggerFactory) =>
             {
                 await using var db = await dbFactory.CreateDbContextAsync();
                 var user = await db.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == userId);
                 if (user is null) return Results.Redirect("/signin");
 
-                var identity = new ClaimsIdentity(UserContext.ClaimsFor(user), CookieAuthenticationDefaults.AuthenticationScheme);
+                var identity = new ClaimsIdentity(UserContext.ClaimsFor(user, clock.GetUtcNow()), CookieAuthenticationDefaults.AuthenticationScheme);
                 await http.SignInAsync(CookieAuthenticationDefaults.AuthenticationScheme, new ClaimsPrincipal(identity));
+                SecurityLog.For(loggerFactory).SignedIn(user.Id, user.Role, http.Connection.RemoteIpAddress);
                 return Results.LocalRedirect(LocalUrl.IsLocal(returnUrl) ? returnUrl : "/");
             })
-            .AllowAnonymous();
+            .AllowAnonymous()
+            .RequireRateLimiting(RateLimitPolicy);
 
-        app.MapPost("/account/signout", async ([FromForm] string? returnUrl, HttpContext http) =>
+        app.MapPost("/account/signout", async ([FromForm] string? returnUrl, HttpContext http, ILoggerFactory loggerFactory) =>
         {
+            var userId = UserContext.From(http.User)?.Id;
             await http.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
+            SecurityLog.For(loggerFactory).SignedOut(userId);
             return Results.Redirect("/signin");
         });
 

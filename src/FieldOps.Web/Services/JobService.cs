@@ -1,6 +1,7 @@
 using System.ComponentModel.DataAnnotations;
 using System.Globalization;
 using System.Linq.Expressions;
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 using FieldOps.Core.Auditing;
 using FieldOps.Core.Jobs;
@@ -16,11 +17,13 @@ namespace FieldOps.Web.Services;
 /// an edit. Edits use optimistic concurrency: a save made against an out-of-date copy is rejected rather
 /// than silently overwriting someone else's work.
 /// </summary>
-public sealed class JobService(IDbContextFactory<AppDbContext> dbFactory, TimeProvider clock)
+public sealed class JobService(IDbContextFactory<AppDbContext> dbFactory, TimeProvider clock, ILoggerFactory loggerFactory)
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
     private const int SqliteUniqueConstraint = 2067; // SQLITE_CONSTRAINT_UNIQUE
+
+    private readonly ILogger _security = SecurityLog.For(loggerFactory);
 
     private static readonly Expression<Func<Job, int>> StatusOrder = j =>
         j.Status == JobStatus.Quote ? 0 :
@@ -142,7 +145,7 @@ public sealed class JobService(IDbContextFactory<AppDbContext> dbFactory, TimePr
 
     public async Task<ServiceResult<int>> CreateAsync(JobInput input, UserContext user, CancellationToken ct = default)
     {
-        if (!user.IsOffice) return ServiceResult.Forbidden("Only office staff can create jobs.");
+        if (!user.IsOffice) return Deny(user, "Only office staff can create jobs.");
         if (Validate(input) is { } problem) return ServiceResult.Invalid(problem);
         if (input.Status is not (JobStatus.Quote or JobStatus.Scheduled))
             return ServiceResult.Invalid("A new job starts as a quote or as scheduled.");
@@ -172,7 +175,7 @@ public sealed class JobService(IDbContextFactory<AppDbContext> dbFactory, TimePr
 
     public async Task<ServiceResult> UpdateAsync(int id, JobInput input, int expectedVersion, UserContext user, CancellationToken ct = default)
     {
-        if (!user.IsOffice) return ServiceResult.Forbidden("Only office staff can edit job details.");
+        if (!user.IsOffice) return Deny(user, "Only office staff can edit job details.");
         if (Validate(input) is { } problem) return ServiceResult.Invalid(problem);
 
         await using var db = await dbFactory.CreateDbContextAsync(ct);
@@ -200,12 +203,12 @@ public sealed class JobService(IDbContextFactory<AppDbContext> dbFactory, TimePr
         await using var db = await dbFactory.CreateDbContextAsync(ct);
         var job = await db.ActiveJobs.FirstOrDefaultAsync(j => j.Id == id, ct);
         if (job is null) return ServiceResult.NotFound();
-        if (!CanWorkOn(job, user)) return ServiceResult.Forbidden("Only the office or the assigned technician can move this job.");
+        if (!CanWorkOn(job, user)) return Deny(user, "Only the office or the assigned technician can move this job.");
         if (job.Status == to) return ServiceResult.Ok();
         if (!StatusWorkflow.CanMove(job.Status, to))
             return ServiceResult.Invalid($"{job.Reference} can't move from {job.Status.Label()} to {to.Label()}.");
         if (!user.IsOffice && StatusWorkflow.IsOfficeOnly(job.Status, to))
-            return ServiceResult.Forbidden("Only office staff can invoice, cancel or reopen a job.");
+            return Deny(user, "Only office staff can invoice, cancel or reopen a job.");
 
         var change = new FieldChange("Status", job.Status.Label(), to.Label());
         job.Status = to;
@@ -216,7 +219,7 @@ public sealed class JobService(IDbContextFactory<AppDbContext> dbFactory, TimePr
 
     public async Task<ServiceResult> DeleteAsync(int id, UserContext user, CancellationToken ct = default)
     {
-        if (!user.IsOffice) return ServiceResult.Forbidden("Only office staff can delete jobs.");
+        if (!user.IsOffice) return Deny(user, "Only office staff can delete jobs.");
 
         await using var db = await dbFactory.CreateDbContextAsync(ct);
         var job = await db.ActiveJobs.FirstOrDefaultAsync(j => j.Id == id, ct);
@@ -237,7 +240,7 @@ public sealed class JobService(IDbContextFactory<AppDbContext> dbFactory, TimePr
         await using var db = await dbFactory.CreateDbContextAsync(ct);
         var job = await db.ActiveJobs.Include(j => j.Visits).FirstOrDefaultAsync(j => j.Id == jobId, ct);
         if (job is null) return ServiceResult.NotFound();
-        if (!CanChangeVisits(job.Status, job.AssigneeId, user)) return ServiceResult.Forbidden();
+        if (!CanChangeVisits(job.Status, job.AssigneeId, user)) return Deny(user);
         if (job.Visits.Any(v => v.Date == date))
             return ServiceResult.Invalid($"This job already has a visit on {date.ToString("MMM d", CultureInfo.CurrentCulture)}.");
 
@@ -251,7 +254,7 @@ public sealed class JobService(IDbContextFactory<AppDbContext> dbFactory, TimePr
         await using var db = await dbFactory.CreateDbContextAsync(ct);
         var (visit, job) = await LoadVisitAsync(db, visitId, ct);
         if (visit is null || job is null) return ServiceResult.NotFound();
-        if (!CanChangeVisits(job.Status, job.AssigneeId, user)) return ServiceResult.Forbidden();
+        if (!CanChangeVisits(job.Status, job.AssigneeId, user)) return Deny(user);
         if (visit.IsDone == done) return ServiceResult.Ok();
         if (done && visit.Date > Today) return ServiceResult.Invalid("A visit can't be marked done before its date.");
 
@@ -268,7 +271,7 @@ public sealed class JobService(IDbContextFactory<AppDbContext> dbFactory, TimePr
         await using var db = await dbFactory.CreateDbContextAsync(ct);
         var (visit, job) = await LoadVisitAsync(db, visitId, ct);
         if (visit is null || job is null) return ServiceResult.NotFound();
-        if (!CanChangeVisits(job.Status, job.AssigneeId, user)) return ServiceResult.Forbidden();
+        if (!CanChangeVisits(job.Status, job.AssigneeId, user)) return Deny(user);
         if (visit.Hours == rounded) return ServiceResult.Ok();
 
         var change = new FieldChange("Hours", FormatHours(visit.Hours), FormatHours(rounded));
@@ -279,7 +282,7 @@ public sealed class JobService(IDbContextFactory<AppDbContext> dbFactory, TimePr
 
     public async Task<ServiceResult> RemoveVisitAsync(int visitId, UserContext user, CancellationToken ct = default)
     {
-        if (!user.IsOffice) return ServiceResult.Forbidden("Only office staff can remove visits.");
+        if (!user.IsOffice) return Deny(user, "Only office staff can remove visits.");
 
         await using var db = await dbFactory.CreateDbContextAsync(ct);
         var (visit, job) = await LoadVisitAsync(db, visitId, ct);
@@ -341,6 +344,14 @@ public sealed class JobService(IDbContextFactory<AppDbContext> dbFactory, TimePr
     private static string EscapeLike(string text) => text.Replace(@"\", @"\\").Replace("%", @"\%").Replace("_", @"\_");
 
     private static bool CanWorkOn(Job job, UserContext user) => user.IsOffice || job.AssigneeId == user.Id;
+
+    /// <summary>Refuses a command and logs the refusal as a security event, naming the command that refused.</summary>
+    private ServiceResult Deny(UserContext user, string? message = null, [CallerMemberName] string operation = "")
+    {
+        var result = message is null ? ServiceResult.Forbidden() : ServiceResult.Forbidden(message);
+        _security.PermissionDenied(user.Id, user.Role, operation, result.Message);
+        return result;
+    }
 
     /// <summary>Invoiced and cancelled jobs are closed records: only the office changes their visits and hours.</summary>
     public static bool CanChangeVisits(JobStatus status, int? assigneeId, UserContext user) =>

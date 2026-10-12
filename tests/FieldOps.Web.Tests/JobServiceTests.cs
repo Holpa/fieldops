@@ -1,6 +1,7 @@
 using FieldOps.Core.Jobs;
 using FieldOps.Web.Data;
 using FieldOps.Web.Services;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace FieldOps.Web.Tests;
 
@@ -17,7 +18,7 @@ public sealed class JobServiceTests : IDisposable
 
     public JobServiceTests()
     {
-        _jobs = new JobService(_db, new FixedTimeProvider(Now));
+        _jobs = new JobService(_db, new FixedTimeProvider(Now), NullLoggerFactory.Instance);
         _office = Seed.User(_db, "Avery Stone", UserRole.Office);
         _tech = Seed.User(_db, "Kai Moreno", UserRole.Field);
         _jobId = Seed.Job(_db, "J-1001", JobStatus.FieldWork, _tech.Id, Now.UtcDateTime);

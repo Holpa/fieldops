@@ -1,12 +1,18 @@
+using System.Globalization;
+using System.Security.Claims;
 using System.Text.Json.Serialization;
+using System.Threading.RateLimiting;
 using FieldOps.Web.Components;
 using FieldOps.Web.Data;
 using FieldOps.Web.Endpoints;
 using FieldOps.Web.Services;
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Components.Authorization;
 using Microsoft.AspNetCore.Components.Server.Circuits;
 using Microsoft.AspNetCore.Diagnostics;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -24,7 +30,10 @@ builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationSc
     {
         options.LoginPath = "/signin";
         options.AccessDeniedPath = "/signin";
-        options.Cookie.Name = "fieldops.auth";
+        // A __Host- cookie is only accepted when it is Secure, has Path=/ and has no Domain.
+        options.Cookie.Name = "__Host-fieldops.auth";
+        options.Cookie.Path = "/";
+        options.Cookie.SecurePolicy = CookieSecurePolicy.Always;
         options.Cookie.HttpOnly = true;
         options.Cookie.SameSite = SameSiteMode.Lax;
         options.ExpireTimeSpan = TimeSpan.FromHours(8);
@@ -32,16 +41,39 @@ builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationSc
         options.Events.OnRedirectToLogin = context =>
         {
             // API callers get a status code, not an HTML sign-in page.
-            if (context.Request.Path.StartsWithSegments("/api")) context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+            if (context.Request.Path.StartsWithSegments("/api"))
+            {
+                context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+                Security(context.HttpContext).ApiUnauthenticated(context.Request.Path, context.HttpContext.Connection.RemoteIpAddress);
+            }
             else context.Response.Redirect(context.RedirectUri);
             return Task.CompletedTask;
         };
+        // Sliding renewal keeps an active session going, but never past 12 hours from sign-in.
+        options.Events.OnValidatePrincipal = async context =>
+        {
+            var now = context.HttpContext.RequestServices.GetRequiredService<TimeProvider>().GetUtcNow();
+            if (SessionLimit.HasExpired(context.Principal?.FindFirstValue(SessionLimit.SignedInClaim), now))
+            {
+                context.RejectPrincipal();
+                await context.HttpContext.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
+            }
+        };
     });
+
+// The antiforgery cookie gets the same __Host- treatment.
+builder.Services.AddAntiforgery(options =>
+{
+    options.Cookie.Name = "__Host-fieldops.antiforgery";
+    options.Cookie.Path = "/";
+    options.Cookie.SecurePolicy = CookieSecurePolicy.Always;
+});
 
 builder.Services.AddAuthorizationBuilder()
     .SetFallbackPolicy(new AuthorizationPolicyBuilder().RequireAuthenticatedUser().Build())
     .AddPolicy(Policies.Office, policy => policy.RequireRole(nameof(UserRole.Office)));
 builder.Services.AddCascadingAuthenticationState();
+builder.Services.AddScoped<AuthenticationStateProvider, SessionLimitAuthenticationStateProvider>();
 
 builder.Services.ConfigureHttpJsonOptions(options =>
 {
@@ -53,9 +85,29 @@ builder.Services.ConfigureHttpJsonOptions(options =>
 // API errors are ProblemDetails bodies that carry the request's trace id.
 builder.Services.AddProblemDetails(o => o.CustomizeProblemDetails = c => c.ProblemDetails.Extensions["traceId"] = c.HttpContext.TraceIdentifier);
 
+// Rate limits in fixed one-minute windows with no queue: sign-in posts per client address, API calls per
+// signed-in user. A refusal is a logged 429 with Retry-After and a ProblemDetails body.
+const int RateLimitWindowSeconds = 60;
+builder.Services.AddRateLimiter(options =>
+{
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    options.AddPolicy(AccountEndpoints.RateLimitPolicy, http => RateLimitPartition.GetFixedWindowLimiter(ClientKey(http), _ => PerWindow(10)));
+    options.AddPolicy(JobsApi.RateLimitPolicy, http => RateLimitPartition.GetFixedWindowLimiter(UserOrClientKey(http), _ => PerWindow(60)));
+    options.OnRejected = async (context, _) =>
+    {
+        var http = context.HttpContext;
+        var policy = http.GetEndpoint()?.Metadata.GetMetadata<EnableRateLimitingAttribute>()?.PolicyName ?? "none";
+        Security(http).RateLimited(policy, policy == JobsApi.RateLimitPolicy ? UserOrClientKey(http) : ClientKey(http), http.Request.Path);
+        http.Response.Headers.RetryAfter = RateLimitWindowSeconds.ToString(CultureInfo.InvariantCulture);
+        await TypedResults.Problem("Too many requests. Wait a moment and try again.",
+            statusCode: StatusCodes.Status429TooManyRequests, title: "Too Many Requests").ExecuteAsync(http);
+    };
+});
+
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<ChatNotifier>();
 builder.Services.AddSingleton<PresenceTracker>();
+builder.Services.AddSingleton<ChatSendLimiter>();
 builder.Services.AddScoped<CircuitHandler, PresenceCircuitHandler>();
 builder.Services.AddScoped<CurrentUser>();
 builder.Services.AddScoped<JobService>();
@@ -63,8 +115,13 @@ builder.Services.AddScoped<DashboardService>();
 builder.Services.AddScoped<RouteService>();
 builder.Services.AddScoped<ChatService>();
 
-// No "Server: Kestrel" header on responses.
-builder.WebHost.ConfigureKestrel(options => options.AddServerHeader = false);
+// No "Server: Kestrel" header on responses, and request bodies capped at 1 MB: the app takes no uploads, and
+// its largest body is a small form or JSON patch. Blazor's SignalR messages have their own size limit.
+builder.WebHost.ConfigureKestrel(options =>
+{
+    options.AddServerHeader = false;
+    options.Limits.MaxRequestBodySize = 1_048_576;
+});
 
 var app = builder.Build();
 
@@ -88,7 +145,7 @@ app.Use((context, next) =>
 });
 
 const string ContentSecurityPolicy =
-    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; " +
+    "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; " +
     "font-src 'self'; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'";
 
 // Security headers on every response, set when the response starts so a re-executed error page keeps them.
@@ -114,7 +171,14 @@ app.Use((context, next) =>
     return next(context);
 });
 
+// After the header pass, so the redirect carries the headers too; before authentication, so no cookie is
+// read from a plain HTTP request.
+app.UseHttpsRedirection();
+
 app.UseAuthentication();
+// After authentication, because the API limit is per signed-in user; before authorization, antiforgery and the
+// endpoints, so a refused request never reaches the database.
+app.UseRateLimiter();
 app.UseAuthorization();
 app.UseAntiforgery();
 
@@ -126,3 +190,14 @@ app.MapRazorComponents<App>()
     .AddInteractiveServerRenderMode();
 
 app.Run();
+
+static FixedWindowRateLimiterOptions PerWindow(int permits) =>
+    new() { PermitLimit = permits, Window = TimeSpan.FromSeconds(RateLimitWindowSeconds), QueueLimit = 0 };
+
+// Rate-limit partitions: the client address, or the signed-in user with the address as the fallback.
+static string ClientKey(HttpContext http) => "ip:" + (http.Connection.RemoteIpAddress?.ToString() ?? "unknown");
+
+static string UserOrClientKey(HttpContext http) =>
+    http.User.FindFirstValue(ClaimTypes.NameIdentifier) is { } id ? "user:" + id : ClientKey(http);
+
+static ILogger Security(HttpContext http) => SecurityLog.For(http.RequestServices.GetRequiredService<ILoggerFactory>());

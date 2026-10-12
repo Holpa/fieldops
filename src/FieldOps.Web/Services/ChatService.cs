@@ -1,3 +1,4 @@
+using System.Threading.RateLimiting;
 using FieldOps.Web.Data;
 using Microsoft.EntityFrameworkCore;
 
@@ -12,6 +13,7 @@ public sealed class ChatService(
     IDbContextFactory<AppDbContext> dbFactory,
     ChatNotifier notifier,
     PresenceTracker presence,
+    ChatSendLimiter sendLimiter,
     TimeProvider clock)
 {
     public const int MaxLength = 2000;
@@ -67,6 +69,7 @@ public sealed class ChatService(
         if (body.Length == 0) return ServiceResult.Invalid("Type a message first.");
         if (body.Length > MaxLength) return ServiceResult.Invalid($"Messages are limited to {MaxLength} characters.");
         if (to == me) return ServiceResult.Invalid("You can't message yourself.");
+        if (!sendLimiter.TryAcquire(me)) return ServiceResult.Invalid("You're sending messages too quickly. Wait a moment and try again.");
 
         await using var db = await dbFactory.CreateDbContextAsync(ct);
         if (!await db.Users.AnyAsync(u => u.Id == to, ct)) return ServiceResult.NotFound("That person no longer exists.");
@@ -113,4 +116,32 @@ public sealed class ChatService(
         await using var db = await dbFactory.CreateDbContextAsync(ct);
         return await db.ChatMessages.CountAsync(m => m.ToId == me && m.ReadUtc == null, ct);
     }
+}
+
+/// <summary>
+/// Flood brake for team chat: each user may send 20 messages a minute. Chat sends travel over the Blazor
+/// circuit, not HTTP, so the request rate limiter never sees them. One instance is shared by the whole app.
+/// </summary>
+public sealed class ChatSendLimiter(ILoggerFactory loggerFactory) : IDisposable
+{
+    public const int PerMinute = 20;
+
+    private readonly ILogger _security = SecurityLog.For(loggerFactory);
+
+    private readonly PartitionedRateLimiter<int> _limiter = PartitionedRateLimiter.Create<int, int>(userId =>
+        RateLimitPartition.GetFixedWindowLimiter(userId, _ => new FixedWindowRateLimiterOptions
+        {
+            PermitLimit = PerMinute,
+            Window = TimeSpan.FromMinutes(1),
+            QueueLimit = 0,
+        }));
+
+    public bool TryAcquire(int userId)
+    {
+        using var lease = _limiter.AttemptAcquire(userId);
+        if (!lease.IsAcquired) _security.ChatRateLimited(userId);
+        return lease.IsAcquired;
+    }
+
+    public void Dispose() => _limiter.Dispose();
 }

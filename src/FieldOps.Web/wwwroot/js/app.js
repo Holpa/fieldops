@@ -6,7 +6,8 @@ window.fieldops = {
         const root = document.documentElement;
         const next = root.getAttribute('data-bs-theme') === 'dark' ? 'light' : 'dark';
         root.setAttribute('data-bs-theme', next);
-        document.cookie = `fieldops-theme=${next}; path=/; max-age=31536000; SameSite=Lax`;
+        const secure = location.protocol === 'https:' ? '; Secure' : '';
+        document.cookie = `fieldops-theme=${next}; path=/; max-age=31536000; SameSite=Lax${secure}`;
     },
 
     toggleNav(open) {

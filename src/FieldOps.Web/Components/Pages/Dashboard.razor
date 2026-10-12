@@ -76,9 +76,9 @@ else
                     <li>
                         <a href="@($"jobs?status={s.Status}")">
                             <span class="status-bars-label">@s.Status.Label()</span>
-                            <span class="status-bars-track">
-                                <span class="status-bars-fill status-@s.Status.CssKey()" style="width:@((s.Count * 100.0 / maxCount).ToString("0.#", CultureInfo.InvariantCulture))%"></span>
-                            </span>
+                            <svg class="status-bars-track" aria-hidden="true">
+                                <rect class="status-bars-fill status-@s.Status.CssKey()" width="@((s.Count * 100.0 / maxCount).ToString("0.#", CultureInfo.InvariantCulture))%" height="100%" />
+                            </svg>
                             <span class="status-bars-count">@s.Count</span>
                         </a>
                     </li>

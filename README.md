@@ -21,7 +21,10 @@ dotnet build
 dotnet run --project src/FieldOps.Web
 ```
 
-Open **http://localhost:5080** and pick a sample user. There are no passwords.
+Open **https://localhost:7080** and pick a sample user. There are no passwords.
+
+First time only, run `dotnet dev-certs https --trust` so the browser trusts the local development certificate;
+otherwise it shows a certificate warning.
 
 | Sample user | Role | What they can do |
 |---|---|---|
@@ -77,7 +80,7 @@ dotnet test
 ## REST API
 
 A small API under `/api/jobs` uses the same sign-in cookie and the same service as the UI. Sign in in the
-browser, then open `http://localhost:5080/api/jobs` in the same browser. Signed-out calls get `401`, not a
+browser, then open `https://localhost:7080/api/jobs` in the same browser. Signed-out calls get `401`, not a
 redirect.
 
 | Method | Path | Notes |
@@ -86,27 +89,46 @@ redirect.
 | `GET` | `/api/jobs/{id}` | One job with its visits and activity log |
 | `PATCH` | `/api/jobs/{id}/status` | Body `{ "status": "FieldWork" }`; same rules as the board |
 
-Missing jobs and refused changes come back as `application/problem+json` bodies that include a `traceId`.
+Missing jobs, refused changes and calls over the rate limit (`429`) come back as `application/problem+json`
+bodies that include a `traceId`.
 
 ## Where things are
 
 | Path | What it holds |
 |---|---|
 | `src/FieldOps.Core` | Domain rules with no dependencies: status workflow, visit schedule, route planner, trend forecast, field-level diff |
-| `src/FieldOps.Web/Services` | Application services: permissions, validation, activity log, optimistic concurrency, chat and presence |
+| `src/FieldOps.Web/Services` | Application services: permissions, validation, activity log, optimistic concurrency, chat and presence, session limit and security logging |
 | `src/FieldOps.Web/Components` | Blazor UI: pages, layout, and the SVG chart and route map |
 | `src/FieldOps.Web/Endpoints` | Sign-in endpoints and the REST API |
 | `src/FieldOps.Web/Data` | EF Core model, SQLite context and the sample-data generator |
 | `tests/FieldOps.Core.Tests` | Unit tests for the domain rules |
-| `tests/FieldOps.Web.Tests` | Service tests for permissions, concurrency, the activity log and validation, on an in-memory SQLite database |
+| `tests/FieldOps.Web.Tests` | Service tests for permissions, concurrency, the activity log, validation, the chat send limit and the session limit, on an in-memory SQLite database |
 
 ## Security notes
 
-- It runs on `http://localhost:5080` only, over plain HTTP, and the sign-in is password-less on purpose: this is
-  a local demo, not a deployment.
-- Enforced on the server: role and assignment checks inside the services, antiforgery tokens on form posts,
-  local-only return URLs, EF Core parameterised queries, security headers and an enforced Content-Security-Policy.
-- A real deployment would add HTTPS with HSTS, ASP.NET Core Identity with lockout, rate limiting and Secure cookies.
+Real logins (ASP.NET Core Identity, passwords, MFA, account lockout) are deliberately out of scope for a demo:
+the sign-in is password-less on purpose. Everything else is enforced:
+
+- **HTTPS.** The app serves `https://localhost:7080` and redirects plain HTTP there. HSTS is sent outside
+  Development.
+- **Cookies.** The sign-in and antiforgery cookies are `__Host-` cookies: `Secure`, `HttpOnly`, path `/`, no
+  domain. The sign-in cookie is also `SameSite=Lax`.
+- **Rate limits.** Sign-in: 10 posts a minute per client address. API: 60 calls a minute per signed-in user.
+  Over the limit, requests get `429` with `Retry-After`. Team chat: 20 messages a minute per user.
+- **Session limits.** A sign-in lasts 8 hours and is renewed on page loads and API calls, but every session ends 12
+  hours after sign-in however active it is. Requests are checked as they arrive, and open tabs are checked every
+  minute and sent back to the sign-in page.
+- **Security logging.** Sign-ins, sign-outs, permission denials, signed-out API calls and rate-limit refusals
+  are logged under the `FieldOps.Security` category, with user ids and client addresses but never cookies or
+  tokens.
+- **Content-Security-Policy.** A strict policy with no inline script or style: only the app's own scripts,
+  styles and fonts load.
+  Responses also carry `nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy` and `Permissions-Policy`, and
+  signed-in pages are not cached.
+- **Request limits.** Request bodies are capped at 1 MB, and only local host names are accepted (`localhost`,
+  `127.0.0.1` and `[::1]`).
+- **Server-side rules.** Role and assignment checks inside the services, antiforgery tokens on form posts,
+  local-only return URLs and EF Core parameterised queries.
 
 ## Notes
 

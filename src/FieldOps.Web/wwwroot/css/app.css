@@ -574,7 +574,10 @@ a.kpi:hover {
     color: var(--app-accent);
 }
 
+/* The bars are SVG so their widths are attributes, not inline styles the CSP would block. */
 .status-bars-track {
+    display: block;
+    width: 100%;
     height: 0.6rem;
     border-radius: 999px;
     background: var(--app-border);
@@ -582,10 +585,8 @@ a.kpi:hover {
 }
 
 .status-bars-fill {
-    display: block;
-    height: 100%;
-    border-radius: 999px;
-    background: var(--status-color);
+    rx: 0.3rem;
+    fill: var(--status-color);
 }
 
 .status-bars-count {

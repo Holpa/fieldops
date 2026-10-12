@@ -13,9 +13,12 @@ public sealed record StatusChange(JobStatus Status);
 /// </summary>
 public static class JobsApi
 {
+    /// <summary>Rate-limit policy for the API: 60 calls a minute per signed-in user (set up in Program.cs).</summary>
+    public const string RateLimitPolicy = "api";
+
     public static IEndpointRouteBuilder MapJobsApi(this IEndpointRouteBuilder app)
     {
-        var jobs = app.MapGroup("/api/jobs").RequireAuthorization();
+        var jobs = app.MapGroup("/api/jobs").RequireAuthorization().RequireRateLimiting(RateLimitPolicy);
 
         jobs.MapGet("/", async ([AsParameters] JobQuery query, JobService service, CancellationToken ct) =>
             TypedResults.Ok(await service.SearchAsync(query, ct)));
